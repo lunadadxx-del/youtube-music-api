@@ -132,6 +132,69 @@ app.post('/admin/login', (req, res) => {
   return res.status(401).json({ success: false, error: 'Invalid username or password. Please try again.' });
 });
 
+const profileFilePath = path.join(__dirname, 'data', 'artist_profile.json');
+
+function readArtistProfile() {
+  const defaultProfile = {
+    contactNumber: '8747875269',
+    instagramUrl: 'https://www.instagram.com/bhima_bs_',
+    youtubeUrl: 'https://www.youtube.com/@HLT_BS_Music/videos',
+  };
+
+  try {
+    if (fs.existsSync(profileFilePath)) {
+      const data = fs.readFileSync(profileFilePath, 'utf8');
+      return { ...defaultProfile, ...JSON.parse(data) };
+    }
+  } catch (err) {
+    console.error('[ARTIST_PROFILE] Error reading profile file:', err);
+  }
+  return defaultProfile;
+}
+
+/**
+ * GET /api/artist/profile
+ * Fetches stored Artist Profile info (Contact, Instagram, YouTube)
+ */
+app.get('/api/artist/profile', (req, res) => {
+  const profile = readArtistProfile();
+  res.json({ success: true, profile });
+});
+
+/**
+ * POST /admin/artist/profile
+ * Updates and persists Artist Profile info to disk
+ */
+app.post('/admin/artist/profile', (req, res) => {
+  try {
+    const current = readArtistProfile();
+    const { contactNumber, instagramUrl, youtubeUrl } = req.body;
+
+    const updated = {
+      contactNumber: contactNumber !== undefined ? String(contactNumber).trim() : current.contactNumber,
+      instagramUrl: instagramUrl !== undefined ? String(instagramUrl).trim() : current.instagramUrl,
+      youtubeUrl: youtubeUrl !== undefined ? String(youtubeUrl).trim() : current.youtubeUrl,
+    };
+
+    const dir = path.dirname(profileFilePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(profileFilePath, JSON.stringify(updated, null, 2), 'utf8');
+    console.log('[ARTIST_PROFILE] Updated artist profile successfully:', updated);
+
+    return res.json({
+      success: true,
+      message: 'Artist profile updated successfully',
+      profile: updated,
+    });
+  } catch (err) {
+    console.error('[ARTIST_PROFILE_ERROR] Failed to save profile:', err);
+    return res.status(500).json({ success: false, error: 'Failed to save artist profile' });
+  }
+});
+
 /**
  * GET /admin/songs/status
  * Dynamically scans Cloudflare R2 live bucket contents to return actual upload statuses.
