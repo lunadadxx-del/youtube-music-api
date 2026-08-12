@@ -41,30 +41,66 @@ const s3Client = new S3Client({
   }
 });
 
-const dbPath = path.join(__dirname, 'data', 'songs_db.json');
+/**
+ * Helper: Lists all objects directly from Cloudflare R2 bucket.
+ * Handles pagination for > 1000 items.
+ */
+async function fetchAllR2Objects() {
+  const objects = [];
+  let isTruncated = true;
+  let continuationToken = undefined;
 
-function loadDb() {
-  try {
-    if (!fs.existsSync(dbPath)) {
-      fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-      fs.writeFileSync(dbPath, JSON.stringify({}), 'utf-8');
-      return {};
+  while (isTruncated) {
+    const command = new ListObjectsV2Command({
+      Bucket: bucketName,
+      ContinuationToken: continuationToken,
+    });
+    const response = await s3Client.send(command);
+    if (response.Contents) {
+      objects.push(...response.Contents);
     }
-    const data = fs.readFileSync(dbPath, 'utf-8');
-    return JSON.parse(data);
-  } catch (err) {
-    console.error('[DB_ERROR] Failed reading songs_db.json:', err);
-    return {};
+    isTruncated = response.IsTruncated || false;
+    continuationToken = response.NextContinuationToken;
   }
+
+  // STEP 1 Safe Logging: Log R2 bucket name, object count, and key list
+  console.log(`R2 bucket: ${bucketName}`);
+  console.log(`Number of objects found: ${objects.length}`);
+  console.log(`Object keys: ${objects.map(o => o.Key).join(', ')}`);
+
+  return objects;
 }
 
-function saveDb(db) {
-  try {
-    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    fs.writeFileSync(dbPath, JSON.stringify(db, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('[DB_ERROR] Failed writing songs_db.json:', err);
+/**
+ * Helper: Extracts YouTube Video ID from R2 object Key using multiple matching strategies.
+ */
+function extractYoutubeIdFromKey(key) {
+  if (!key) return null;
+
+  const cleanKey = key.split('/').pop() || key;
+
+  // 1. Explicit bracket pattern e.g. [Rxsdi6JIj-8]
+  const bracketMatch = cleanKey.match(/\[([a-zA-Z0-9_-]{11})\]/);
+  if (bracketMatch && bracketMatch[1]) {
+    return bracketMatch[1];
   }
+
+  // 2. Exact 11-char YouTube ID filename (with or without audio/video extension)
+  const baseName = cleanKey.replace(/\.(mp3|m4a|wav|flac|aac|ogg|mp4)$/i, '');
+  if (/^[a-zA-Z0-9_-]{11}$/.test(baseName)) {
+    return baseName;
+  }
+
+  // 3. Prefix pattern e.g. music/8_vJvjkTUSQ.mp3 or songs/8_vJvjkTUSQ.mp3
+  const pathParts = key.split('/');
+  for (const part of pathParts) {
+    const partBase = part.replace(/\.(mp3|m4a|wav|flac|aac|ogg|mp4)$/i, '');
+    if (/^[a-zA-Z0-9_-]{11}$/.test(partBase)) {
+      return partBase;
+    }
+  }
+
+  return baseName;
 }
 
 /**
@@ -75,26 +111,96 @@ app.get('/health', (req, res) => {
 });
 
 /**
- * GET /admin/songs/status
- * Returns canonical R2 upload database mapping: youtubeVideoId -> song object
+ * POST /admin/login
+ * Secure authentication against server environment variables (ADMIN_USERNAME & ADMIN_PASSWORD)
  */
-app.get('/admin/songs/status', (req, res) => {
-  const db = loadDb();
-  res.json({ success: true, count: Object.keys(db).length, songs: db });
+app.post('/admin/login', (req, res) => {
+  const { username, password } = req.body;
+  const adminUser = process.env.ADMIN_USERNAME || 'admin';
+  const adminPass = process.env.ADMIN_PASSWORD || 'bheema@bs7686';
+
+  const trimmedUser = (username || '').trim();
+  const trimmedPass = (password || '').trim();
+
+  if (trimmedUser.toLowerCase() === adminUser.toLowerCase() && trimmedPass === adminPass) {
+    const token = Buffer.from(`${trimmedUser}:${Date.now()}`).toString('base64');
+    console.log(`[ADMIN_AUTH] Successful login for user: ${trimmedUser}`);
+    return res.json({ success: true, username: trimmedUser, token });
+  }
+
+  console.warn(`[ADMIN_AUTH] Failed login attempt for user: ${trimmedUser}`);
+  return res.status(401).json({ success: false, error: 'Invalid username or password. Please try again.' });
+});
+
+/**
+ * GET /admin/songs/status
+ * Dynamically scans Cloudflare R2 live bucket contents to return actual upload statuses.
+ * Cloudflare R2 is the SINGLE SOURCE OF TRUTH.
+ */
+app.get('/admin/songs/status', async (req, res) => {
+  try {
+    const r2Objects = await fetchAllR2Objects();
+    const songsMap = {};
+
+    for (const obj of r2Objects) {
+      if (!obj.Key) continue;
+      const youtubeVideoId = extractYoutubeIdFromKey(obj.Key);
+      if (!youtubeVideoId) continue;
+
+      const audioUrl = `${publicDomain}/${encodeURIComponent(obj.Key).replaceAll('%2F', '/')}`;
+
+      const songData = {
+        uploaded: true,
+        r2Key: obj.Key,
+        publicUrl: audioUrl,
+        youtubeVideoId,
+        r2ObjectKey: obj.Key,
+        r2AudioUrl: audioUrl,
+        fileSize: obj.Size,
+        lastModified: obj.LastModified,
+        uploadStatus: 'UPLOADED',
+      };
+
+      // Map primary key (extracted YouTube ID or clean baseName)
+      songsMap[youtubeVideoId] = songData;
+
+      // Also map raw obj.Key if different to support fallback matches
+      if (obj.Key !== youtubeVideoId) {
+        songsMap[obj.Key] = songData;
+      }
+    }
+
+    console.log(`[R2_STATUS_CHECK] Live R2 scan: ${r2Objects.length} total objects, ${Object.keys(songsMap).length} mapped keys`);
+
+    return res.json({
+      success: true,
+      source: 'Cloudflare_R2_Live',
+      count: r2Objects.length,
+      songs: songsMap,
+    });
+  } catch (err) {
+    console.error('[R2_STATUS_ERROR] Cloudflare R2 live scan failed:', err);
+    return res.status(500).json({
+      success: false,
+      error: `Cloudflare R2 scan failed: ${err.message || err.toString()}`,
+      count: 0,
+      songs: {},
+    });
+  }
 });
 
 /**
  * GET /admin/r2/files
- * Lists object keys directly from Cloudflare R2 bucket
+ * Lists real object keys directly from Cloudflare R2 bucket
  */
 app.get('/admin/r2/files', async (req, res) => {
   try {
-    const command = new ListObjectsV2Command({ Bucket: bucketName });
-    const response = await s3Client.send(command);
-    const files = (response.Contents || []).map(obj => ({
+    const r2Objects = await fetchAllR2Objects();
+    const files = r2Objects.map(obj => ({
       key: obj.Key,
       size: obj.Size,
-      lastModified: obj.LastModified
+      lastModified: obj.LastModified,
+      url: `${publicDomain}/${encodeURIComponent(obj.Key).replaceAll('%2F', '/')}`,
     }));
     res.json({ success: true, count: files.length, files });
   } catch (err) {
@@ -105,18 +211,56 @@ app.get('/admin/r2/files', async (req, res) => {
 
 /**
  * POST /admin/upload-song
- * REAL Cloudflare R2 Multipart File Upload
+ * REAL Cloudflare R2 Multipart File Upload with DUPLICATE UPLOAD PROTECTION
  */
 app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
   try {
     const file = req.file;
     const { youtubeVideoId, songTitle, artist, duration } = req.body;
 
-    if (!file) {
-      return res.status(400).json({ success: false, error: 'No audio file uploaded in multipart request.' });
-    }
     if (!youtubeVideoId) {
       return res.status(400).json({ success: false, error: 'Missing youtubeVideoId parameter.' });
+    }
+
+    // 1. DUPLICATE CHECK: Verify if Cloudflare R2 already contains an object for this YouTube Video ID
+    const r2Objects = await fetchAllR2Objects();
+    const existingObject = r2Objects.find(obj => {
+      if (!obj.Key) return false;
+      const ytId = extractYoutubeIdFromKey(obj.Key);
+      return ytId === youtubeVideoId || obj.Key.includes(youtubeVideoId);
+    });
+
+    if (existingObject) {
+      const existingAudioUrl = `${publicDomain}/${encodeURIComponent(existingObject.Key).replaceAll('%2F', '/')}`;
+      console.log(`[R2_DUPLICATE_PREVENTED] Song ${youtubeVideoId} already exists in R2 at key="${existingObject.Key}"`);
+
+      return res.json({
+        success: true,
+        status: 'already_uploaded',
+        uploaded: true,
+        message: 'Song already exists in Cloudflare R2 bucket.',
+        r2Key: existingObject.Key,
+        publicUrl: existingAudioUrl,
+        r2ObjectKey: existingObject.Key,
+        r2AudioUrl: existingAudioUrl,
+        youtubeVideoId,
+        song: {
+          youtubeVideoId,
+          songTitle: songTitle || 'Untitled Song',
+          artist: artist || 'HLT&BS Official Music',
+          duration: duration || '0:00',
+          r2Key: existingObject.Key,
+          publicUrl: existingAudioUrl,
+          r2ObjectKey: existingObject.Key,
+          r2AudioUrl: existingAudioUrl,
+          uploaded: true,
+          uploadStatus: 'UPLOADED',
+        },
+      });
+    }
+
+    if (!file) {
+      return res.status(400).json({ success: false, error: 'No audio file uploaded in multipart request.' });
     }
 
     const lowerName = file.originalname.toLowerCase();
@@ -142,8 +286,8 @@ app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
       ContentType: contentType,
       Metadata: {
         youtubeId: youtubeVideoId,
-        uploadedBy: 'admin-panel'
-      }
+        uploadedBy: 'admin-panel',
+      },
     });
 
     const r2Response = await s3Client.send(putCommand);
@@ -152,38 +296,40 @@ app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
     // Public audio URL
     const audioUrl = `${publicDomain}/${encodeURIComponent(objectKey).replaceAll('%2F', '/')}`;
 
-    // Update persistent database
-    const db = loadDb();
     const songEntry = {
       youtubeVideoId,
       songTitle: songTitle || 'Untitled Song',
       artist: artist || 'HLT&BS Official Music',
       duration: duration || '0:00',
+      r2Key: objectKey,
+      publicUrl: audioUrl,
       r2ObjectKey: objectKey,
       r2AudioUrl: audioUrl,
       uploadedAt: new Date().toISOString(),
       fileSize: file.size,
+      uploaded: true,
       uploadStatus: 'UPLOADED',
-      etag: r2Response.ETag
+      etag: r2Response.ETag,
     };
-
-    db[youtubeVideoId] = songEntry;
-    saveDb(db);
 
     return res.json({
       success: true,
+      status: 'uploaded',
+      uploaded: true,
       message: 'Uploaded successfully to Cloudflare R2',
+      r2Key: objectKey,
+      publicUrl: audioUrl,
       r2ObjectKey: objectKey,
       r2AudioUrl: audioUrl,
       fileSize: file.size,
       youtubeVideoId,
-      song: songEntry
+      song: songEntry,
     });
   } catch (err) {
     console.error('[R2_UPLOAD_ERROR] Cloudflare R2 Upload Failed:', err);
     return res.status(500).json({
       success: false,
-      error: `Cloudflare R2 Upload Failed: ${err.message || err.toString()}`
+      error: `Cloudflare R2 Upload Failed: ${err.message || err.toString()}`,
     });
   }
 });
