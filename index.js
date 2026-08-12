@@ -5,7 +5,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { S3Client, PutObjectCommand, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 
 dotenv.config();
 
@@ -40,6 +40,50 @@ const s3Client = new S3Client({
     secretAccessKey: secretAccessKey || ''
   }
 });
+
+const profileR2Key = 'config/artist-profile.json';
+
+const defaultArtistProfile = {
+  contactNumber: '8747875269',
+  instagramUrl: 'https://www.instagram.com/bhima_bs_',
+  youtubeUrl: 'https://www.youtube.com/@HLT_BS_Music/videos',
+};
+
+/**
+ * Helper: Asynchronously reads config/artist-profile.json from Cloudflare R2 bucket.
+ */
+async function fetchArtistProfileFromR2() {
+  try {
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: profileR2Key,
+    });
+    const response = await s3Client.send(command);
+    const bodyText = await response.Body.transformToString('utf-8');
+    const parsed = JSON.parse(bodyText);
+    return { ...defaultArtistProfile, ...parsed };
+  } catch (err) {
+    if (err.name !== 'NoSuchKey' && err.$metadata?.httpStatusCode !== 404) {
+      console.warn('[R2_PROFILE_READ_WARN] Could not fetch profile from R2:', err.message || err);
+    }
+    return defaultArtistProfile;
+  }
+}
+
+/**
+ * Helper: Asynchronously uploads/overwrites config/artist-profile.json in Cloudflare R2 bucket.
+ */
+async function saveArtistProfileToR2(profileData) {
+  const jsonString = JSON.stringify(profileData, null, 2);
+  const command = new PutObjectCommand({
+    Bucket: bucketName,
+    Key: profileR2Key,
+    Body: Buffer.from(jsonString, 'utf-8'),
+    ContentType: 'application/json',
+  });
+  await s3Client.send(command);
+  console.log(`[R2_PROFILE_SAVED] Persisted config/artist-profile.json to Cloudflare R2 bucket "${bucketName}"`);
+}
 
 /**
  * Helper: Lists all objects directly from Cloudflare R2 bucket.
@@ -132,42 +176,27 @@ app.post('/admin/login', (req, res) => {
   return res.status(401).json({ success: false, error: 'Invalid username or password. Please try again.' });
 });
 
-const profileFilePath = path.join(__dirname, 'data', 'artist_profile.json');
-
-function readArtistProfile() {
-  const defaultProfile = {
-    contactNumber: '8747875269',
-    instagramUrl: 'https://www.instagram.com/bhima_bs_',
-    youtubeUrl: 'https://www.youtube.com/@HLT_BS_Music/videos',
-  };
-
-  try {
-    if (fs.existsSync(profileFilePath)) {
-      const data = fs.readFileSync(profileFilePath, 'utf8');
-      return { ...defaultProfile, ...JSON.parse(data) };
-    }
-  } catch (err) {
-    console.error('[ARTIST_PROFILE] Error reading profile file:', err);
-  }
-  return defaultProfile;
-}
-
 /**
  * GET /api/artist/profile
- * Fetches stored Artist Profile info (Contact, Instagram, YouTube)
+ * Reads config/artist-profile.json directly from Cloudflare R2.
  */
-app.get('/api/artist/profile', (req, res) => {
-  const profile = readArtistProfile();
-  res.json({ success: true, profile });
+app.get('/api/artist/profile', async (req, res) => {
+  try {
+    const profile = await fetchArtistProfileFromR2();
+    res.json({ success: true, source: 'Cloudflare_R2', profile });
+  } catch (err) {
+    console.error('[R2_PROFILE_GET_ERROR]', err);
+    res.json({ success: true, source: 'Default_Fallback', profile: defaultArtistProfile });
+  }
 });
 
 /**
  * POST /admin/artist/profile
- * Updates and persists Artist Profile info to disk
+ * Converts profile to JSON and uploads/overwrites config/artist-profile.json in Cloudflare R2.
  */
-app.post('/admin/artist/profile', (req, res) => {
+app.post('/admin/artist/profile', async (req, res) => {
   try {
-    const current = readArtistProfile();
+    const current = await fetchArtistProfileFromR2();
     const { contactNumber, instagramUrl, youtubeUrl } = req.body;
 
     const updated = {
@@ -176,22 +205,19 @@ app.post('/admin/artist/profile', (req, res) => {
       youtubeUrl: youtubeUrl !== undefined ? String(youtubeUrl).trim() : current.youtubeUrl,
     };
 
-    const dir = path.dirname(profileFilePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    fs.writeFileSync(profileFilePath, JSON.stringify(updated, null, 2), 'utf8');
-    console.log('[ARTIST_PROFILE] Updated artist profile successfully:', updated);
+    await saveArtistProfileToR2(updated);
 
     return res.json({
       success: true,
-      message: 'Artist profile updated successfully',
+      message: 'Artist profile saved and persisted to Cloudflare R2',
       profile: updated,
     });
   } catch (err) {
-    console.error('[ARTIST_PROFILE_ERROR] Failed to save profile:', err);
-    return res.status(500).json({ success: false, error: 'Failed to save artist profile' });
+    console.error('[R2_PROFILE_POST_ERROR] Failed saving profile to Cloudflare R2:', err);
+    return res.status(500).json({
+      success: false,
+      error: `Failed to save artist profile to Cloudflare R2: ${err.message || err.toString()}`,
+    });
   }
 });
 
