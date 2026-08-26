@@ -66,7 +66,7 @@ function isValidArtistName(name) {
 
   const lower = clean.toLowerCase();
 
-  // Blacklisted keywords
+  // Blacklisted keywords (contacts, editing, metadata tags, generic words)
   const blacklistedKeywords = [
     'contact', 'phone', 'call', 'mobile', 'whatsapp', 'ph no', 'ph.', 'mob.',
     'subscribe', 'editing', 'editor', 'poster', 'banner', 'thumbnail',
@@ -74,7 +74,11 @@ function isValidArtistName(name) {
     'audio', 'full song', 'official video', 'lyrics video', 'jumbenachujumbe',
     'record', 'recording', 'studio', 'presents', 'production', 'channel',
     'instagram', 'youtube', 'facebook', 'media', 'company', 'entertainment',
-    'sound', 'music company', 'all rights', 'copyright'
+    'sound', 'music company', 'all rights', 'copyright', 'banjara dance', 'dance',
+    'folksong', 'folk song', 'full song tag', 'coming soon', 'bay thara chori kay super',
+    'new coming soon song', 'banjara new feeling song', 'banjara comedy dj song',
+    'banjara pre wedding shoot', 'banjara love feeling song', 'holi song',
+    'banjara holi old lyrics dj songs', 'super chori', 'banjara song', 'banjara dj song'
   ];
 
   for (const keyword of blacklistedKeywords) {
@@ -90,7 +94,7 @@ function isValidArtistName(name) {
 }
 
 /**
- * Helper: Cleans credit prefixes like "lyrics", "singer", "singers", "music by", "by", etc.
+ * Helper: Cleans credit prefixes like "lyrics", "singing", "singer", "singers", "music by", "by", etc.
  */
 function cleanArtistToken(token) {
   if (!token || typeof token !== 'string') return '';
@@ -101,10 +105,10 @@ function cleanArtistToken(token) {
   clean = clean.replace(/\b\d{5,}\b/g, '');
 
   // Remove leading credit prefixes
-  clean = clean.replace(/^(?:lyrics(?:\s+by)?|singer[s]?(?:\s+by)?|vocal[s]?(?:\s+by)?|composed\s+by|written\s+by|music(?:\s+by)?|produced\s+by|directed\s+by|starring|featuring|feat\.?|ft\.?|by|dialogue[s]?(?:\s+by)?)\s+/i, '');
+  clean = clean.replace(/^(?:lyrics(?:\s+by)?|singing(?:\s+by)?|singer[s]?(?:\s+by)?|singin[s]?(?:\s+by)?|singar[s]?(?:\s+by)?|vocal[s]?(?:\s+by)?|composed\s+by|written\s+by|music(?:\s+by)?|produced\s+by|directed\s+by|starring|featuring|feat\.?|ft\.?|by|dialogue[s]?(?:\s+by)?)\s+/i, '');
 
   // Remove trailing credit suffixes
-  clean = clean.replace(/\s+(?:lyrics|mix|remix|dj\s*mix|full\s*song|song|audio|video|official|music)$/i, '');
+  clean = clean.replace(/\s+(?:lyrics|mix|remix|dj\s*mix|full\s*song|song|audio|video|official|music|edm\s*mix|official\s*video|pre\s*wedding\s*shoot|comedy\s*dj\s*song|dance|video\s*song)$/i, '');
 
   return clean.trim();
 }
@@ -118,7 +122,8 @@ function normalizeArtistName(name) {
 
   // HLT&BS Channel variations
   if (lowerRaw === 'hlt&bs' || lowerRaw === 'hlt & bs' || lowerRaw === 'hlt&bs official music' ||
-      lowerRaw === 'hlt & bs official music' || lowerRaw === 'hlt and bs' || lowerRaw === 'hlt official music') {
+      lowerRaw === 'hlt & bs official music' || lowerRaw === 'hlt and bs' || lowerRaw === 'hlt official music' ||
+      lowerRaw === 'hlt' || lowerRaw === 'bs' || lowerRaw === 'hlt bs' || lowerRaw === 'hlt&bs music') {
     return 'HLT&BS Official Music';
   }
 
@@ -130,19 +135,20 @@ function normalizeArtistName(name) {
   // DJ Nagaraj variations
   if (lower === 'dj nagaraj' || lower === 'dj nagaraja' || lower === 'nagaraja' || lower === 'nagaraj' ||
       lower === 'dj nagaraj mix' || lower === 'dj nagaraj official' || lower === 'singer nagaraj' ||
-      lower === 'singer nagaraja' || lower === 'singer dj nagaraj' || lower === 'dj nagaraj songs') {
+      lower === 'singer nagaraja' || lower === 'singer dj nagaraj' || lower === 'dj nagaraj songs' ||
+      lower === 'nagaraja dj' || lower === 'nagaraj dj' || lower === 'singing nagaraj dj' || lower === 'singing nagaraja dj') {
     return 'DJ Nagaraj';
   }
 
   // Praveen Bandri variations
   if (lower === 'praveen bandri' || lower === 'praveen bandari' || lower === 'singer praveen bandri' ||
-      lower === 'praveen bandri music' || lower === 'praveen') {
+      lower === 'praveen bandri music' || lower === 'praveen' || lower === 'singing praveen bandri') {
     return 'Praveen Bandri';
   }
 
   // Bhima BS variations
   if (lower === 'bhima bs' || lower === 'bhima b s' || lower === 'bheem bs' || lower === 'bheema bs' ||
-      lower === 'singer bhima bs' || lower === 'lyrics bhima bs') {
+      lower === 'singer bhima bs' || lower === 'lyrics bhima bs' || lower === 'bhima_bs') {
     return 'Bhima BS';
   }
 
@@ -152,13 +158,95 @@ function normalizeArtistName(name) {
   }
 
   // Gururaj Krg variations
-  if (lower === 'gururaj krg' || lower === 'gururaj' || lower === 'guru krg' || lower === 'gururaja krg') {
+  if (lower === 'gururaj krg' || lower === 'gururaj' || lower === 'guru krg' || lower === 'gururaja krg' ||
+      lower === 'singer gururaja krg' || lower === 'guru raj krg' || lower === 'singing guru raj krg' ||
+      lower === 'singing gururaj krg' || lower === 'guru raj') {
     return 'Gururaj Krg';
   }
 
   // Aishu variations
   if (lower === 'aishu' || lower === 'singer aishu') {
     return 'Aishu';
+  }
+
+  // Sunil BS variations
+  if (lower === 'sunil bs' || lower === 'singin sunil bs' || lower === 'singing sunil bs' || lower === 'sunil b s' || lower === 'sunil_bs') {
+    return 'Sunil BS';
+  }
+
+  // Lakshman Vakdoth variations
+  if (lower === 'lakshman vakdoth' || lower === 'laxman vakdoth' || lower === 'lakshman') {
+    return 'Lakshman Vakdoth';
+  }
+
+  // Harish HLT variations
+  if (lower === 'harish hlt' || lower === 'harish') {
+    return 'Harish HLT';
+  }
+
+  // S.M Somesh Naik variations
+  if (lower === 's.m somesh naik' || lower === 'somesh naik' || lower === 'sm somesh naik' || lower === 's.m somesh' || lower === 's.m_somesh') {
+    return 'S.M Somesh Naik';
+  }
+
+  // N Lokesh Naik variations
+  if (lower === 'n lokesh naik' || lower === 'lokesh naik' || lower === 'n lokesh') {
+    return 'N Lokesh Naik';
+  }
+
+  // MJPS variations
+  if (lower === 'mjps') {
+    return 'MJPS';
+  }
+
+  // Janu Lambani variations
+  if (lower === 'janu lambani') {
+    return 'Janu Lambani';
+  }
+
+  // B N Prashantha variations
+  if (lower === 'b n prashantha' || lower === 'bn prashantha' || lower === 'prashantha') {
+    return 'B N Prashantha';
+  }
+
+  // Renu Rathod variations
+  if (lower === 'renu rathod') {
+    return 'Renu Rathod';
+  }
+
+  // Hundar Krishna variations
+  if (lower === 'hundar krishna') {
+    return 'Hundar Krishna';
+  }
+
+  // CHS Banjar variations
+  if (lower === 'chs banjar') {
+    return 'CHS Banjar';
+  }
+
+  // Chetu CH variations
+  if (lower === 'chetu ch') {
+    return 'Chetu CH';
+  }
+
+  // Tukaram PS variations
+  if (lower === 'tukaram ps') {
+    return 'Tukaram PS';
+  }
+
+  // Kalpana Pawar variations
+  if (lower === 'kalpana pawar' || lower === 'kalpana') {
+    return 'Kalpana Pawar';
+  }
+
+  // Vishwanath variations
+  if (lower === 'vishwanath') {
+    return 'Vishwanath';
+  }
+
+  // Ashwini variations
+  if (lower === 'ashwini') {
+    return 'Ashwini';
   }
 
   // Auto Title-Case formatting for any other artist
@@ -173,9 +261,12 @@ function normalizeArtistName(name) {
  */
 function splitArtists(rawString) {
   if (!rawString || typeof rawString !== 'string') return [];
-  const parts = rawString.split(/\s*(?:&|(?:\band\b)|(?:\bAND\b)|,|\+|\/|\||(?:\bfeat\.?\b)|(?:\bft\.?\b)|(?:\bwith\b))\s*/i);
+  // Protect HLT&BS from being split into HLT and BS
+  const protectedStr = rawString.replace(/HLT\s*&\s*BS/gi, 'HLT_AND_BS');
+  const parts = protectedStr.split(/\s*(?:&|(?:\band\b)|(?:\bAND\b)|,|\+|\/|\||(?:\bfeat\.?\b)|(?:\bft\.?\b)|(?:\bwith\b))\s*/i);
   const result = [];
-  for (const part of parts) {
+  for (let part of parts) {
+    part = part.replaceAll('HLT_AND_BS', 'HLT&BS');
     const cleaned = cleanArtistToken(part);
     if (isValidArtistName(cleaned)) {
       const norm = normalizeArtistName(cleaned);
@@ -230,28 +321,32 @@ function extractArtistsFromSong(title, explicitArtist, channelTitle) {
 
   // 2. Extract from song title
   if (title && typeof title === 'string') {
-    const upperTitle = title.toUpperCase();
+    const upper = title.toUpperCase();
 
-    if (upperTitle.includes('NAGARAJ') || upperTitle.includes('NAGARAJA')) {
-      artists.add('DJ Nagaraj');
-    }
-    if (upperTitle.includes('PRAVEEN BANDRI') || upperTitle.includes('PRAVEEN BANDARI')) {
-      artists.add('Praveen Bandri');
-    }
-    if (upperTitle.includes('BHIMA BS') || upperTitle.includes('BHIMA B S') || upperTitle.includes('BHEEMA BS')) {
-      artists.add('Bhima BS');
-    }
-    if (upperTitle.includes('SUMITRA') || upperTitle.includes('SUMITHRA')) {
-      artists.add('Sumitra');
-    }
-    if (upperTitle.includes('GURURAJ KRG') || upperTitle.includes('GURURAJ')) {
-      artists.add('Gururaj Krg');
-    }
-    if (upperTitle.includes('AISHU')) {
-      artists.add('Aishu');
-    }
+    if (upper.includes('NAGARAJ') || upper.includes('NAGARAJA')) artists.add('DJ Nagaraj');
+    if (upper.includes('PRAVEEN BANDRI') || upper.includes('PRAVEEN BANDARI')) artists.add('Praveen Bandri');
+    if (upper.includes('BHIMA BS') || upper.includes('BHIMA B S') || upper.includes('BHEEMA BS') || upper.includes('BHIMA_BS')) artists.add('Bhima BS');
+    if (upper.includes('SUMITRA') || upper.includes('SUMITHRA')) artists.add('Sumitra');
+    if (upper.includes('GURURAJ KRG') || upper.includes('GURURAJA KRG') || upper.includes('GURU RAJ KRG') || upper.includes('GURURAJ')) artists.add('Gururaj Krg');
+    if (upper.includes('AISHU')) artists.add('Aishu');
+    if (upper.includes('SUNIL BS') || upper.includes('SUNIL B S') || upper.includes('SUNIL_BS')) artists.add('Sunil BS');
+    if (upper.includes('LAKSHMAN VAKDOTH') || upper.includes('LAXMAN VAKDOTH')) artists.add('Lakshman Vakdoth');
+    if (upper.includes('HARISH HLT')) artists.add('Harish HLT');
+    if (upper.includes('SOMESH NAIK') || upper.includes('S.M SOMESH') || upper.includes('S.M_SOMESH')) artists.add('S.M Somesh Naik');
+    if (upper.includes('LOKESH NAIK') || upper.includes('N LOKESH')) artists.add('N Lokesh Naik');
+    if (upper.includes('MJPS')) artists.add('MJPS');
+    if (upper.includes('JANU LAMBANI')) artists.add('Janu Lambani');
+    if (upper.includes('PRASHANTHA') || upper.includes('B N PRASHANTHA')) artists.add('B N Prashantha');
+    if (upper.includes('RENU RATHOD')) artists.add('Renu Rathod');
+    if (upper.includes('HUNDAR KRISHNA')) artists.add('Hundar Krishna');
+    if (upper.includes('CHS BANJAR')) artists.add('CHS Banjar');
+    if (upper.includes('CHETU CH')) artists.add('Chetu CH');
+    if (upper.includes('TUKARAM PS')) artists.add('Tukaram PS');
+    if (upper.includes('KALPANA PAWAR') || upper.includes('KALPANA')) artists.add('Kalpana Pawar');
+    if (upper.includes('VISHWANATH')) artists.add('Vishwanath');
+    if (upper.includes('ASHWINI')) artists.add('Ashwini');
 
-    const matches = title.matchAll(/(?:SINGER[S]?|FEAT\.?|FT\.?|VOCALS?|LYRICS?|MUSIC|BY)\s+([A-Za-z0-9\s&,+\/]+?)(?:\s+(?:DJ|MIX|FULL|OFFICIAL|#|\|\||-)|$)/gi);
+    const matches = title.matchAll(/(?:SINGER[S]?|SINGING|SINGIN|SINGAR|FEAT\.?|FT\.?|VOCALS?|LYRICS?|MUSIC|BY)\s+([A-Za-z0-9\s&,+\/]+?)(?:\s+(?:DJ|MIX|FULL|OFFICIAL|#|\|\||-|MUSIC|LYRICS|SINGING|SINGER)|$)/gi);
     for (const match of matches) {
       if (match[1]) {
         const candidate = match[1].trim();
@@ -601,11 +696,12 @@ app.get(['/api/artists', '/admin/artists'], async (req, res) => {
 
       for (const artistName of artistNames) {
         const artistId = getArtistSlug(artistName);
+        if (artistId === 'hlt' || artistId === 'bs' || artistId === 'hlt-bs') continue;
 
         if (!artistGroupMap[artistId]) {
           const metadata = findArtistMetadata(artistsMetadata, artistId);
-          const hasCustomImage = Boolean(metadata.hasCustomImage || (metadata.profileImageUrl && !metadata.profileImageUrl.includes('default')));
-          const profileImageUrl = metadata.profileImageUrl || `${publicDomain}/artists/${artistId}/profile.jpg`;
+          const hasCustomImage = Boolean(metadata.hasCustomImage === true && metadata.profileImageUrl && !metadata.profileImageUrl.includes('default'));
+          const profileImageUrl = hasCustomImage ? (metadata.profileImageUrl || `${publicDomain}/artists/${artistId}/profile.jpg`) : '';
 
           artistGroupMap[artistId] = {
             artistId,
@@ -623,8 +719,40 @@ app.get(['/api/artists', '/admin/artists'], async (req, res) => {
       }
     }
 
-    // Convert map to list and sort by song count descending
-    const artistsList = Object.values(artistGroupMap).sort((a, b) => b.songCount - a.songCount);
+    // Also include and merge artists directly from artistsMetadata (config/artists.json in R2)
+    for (const [slug, meta] of Object.entries(artistsMetadata || {})) {
+      if (slug === 'hlt' || slug === 'bs' || slug === 'hlt-bs') continue;
+      const canonicalSlug = getArtistSlug(slug);
+      const hasCustomImage = Boolean(meta.hasCustomImage === true && meta.profileImageUrl && !meta.profileImageUrl.includes('default'));
+      const profileImageUrl = hasCustomImage ? (meta.profileImageUrl || `${publicDomain}/artists/${canonicalSlug}/profile.jpg`) : '';
+
+      if (artistGroupMap[canonicalSlug]) {
+        artistGroupMap[canonicalSlug].artistName = meta.artistName || artistGroupMap[canonicalSlug].artistName;
+        artistGroupMap[canonicalSlug].hasCustomImage = hasCustomImage;
+        artistGroupMap[canonicalSlug].profileImageUrl = profileImageUrl;
+        artistGroupMap[canonicalSlug].instagramUrl = meta.instagramUrl || artistGroupMap[canonicalSlug].instagramUrl;
+        artistGroupMap[canonicalSlug].bio = meta.bio || artistGroupMap[canonicalSlug].bio;
+        artistGroupMap[canonicalSlug].updatedAt = meta.updatedAt || artistGroupMap[canonicalSlug].updatedAt;
+      } else {
+        artistGroupMap[canonicalSlug] = {
+          artistId: canonicalSlug,
+          artistName: meta.artistName || normalizeArtistName(canonicalSlug.replaceAll('-', ' ')),
+          profileImageUrl,
+          hasCustomImage,
+          instagramUrl: meta.instagramUrl || '',
+          bio: meta.bio || '',
+          songCount: 0,
+          updatedAt: meta.updatedAt || null,
+        };
+      }
+    }
+
+    // Convert map to list and sort by song count descending, then alphabetical
+    const artistsList = Object.values(artistGroupMap).sort((a, b) => {
+      const countDiff = b.songCount - a.songCount;
+      if (countDiff !== 0) return countDiff;
+      return a.artistName.localeCompare(b.artistName);
+    });
 
     return res.json({
       success: true,
@@ -679,8 +807,8 @@ app.get(['/api/artists/:artistId', '/admin/artists/:artistId'], async (req, res)
       resolvedArtistName = normalizeArtistName(artistId.replaceAll('-', ' '));
     }
 
-    const hasCustomImage = Boolean(metadata.hasCustomImage || (metadata.profileImageUrl && !metadata.profileImageUrl.includes('default')));
-    const profileImageUrl = metadata.profileImageUrl || `${publicDomain}/artists/${targetSlug}/profile.jpg`;
+    const hasCustomImage = Boolean(metadata.hasCustomImage === true && metadata.profileImageUrl && !metadata.profileImageUrl.includes('default'));
+    const profileImageUrl = hasCustomImage ? (metadata.profileImageUrl || `${publicDomain}/artists/${targetSlug}/profile.jpg`) : '';
 
     return res.json({
       success: true,
@@ -776,7 +904,20 @@ app.post([
 
     const safeSlug = getArtistSlug(artistId);
     const r2Key = `artists/${safeSlug}/profile.jpg`;
-    const contentType = file.mimetype || 'image/jpeg';
+    let contentType = file.mimetype || 'image/jpeg';
+    if (!contentType || contentType === 'application/octet-stream' || !contentType.startsWith('image/')) {
+      if (file.buffer && file.buffer.length >= 4) {
+        if (file.buffer[0] === 0xff && file.buffer[1] === 0xd8 && file.buffer[2] === 0xff) {
+          contentType = 'image/jpeg';
+        } else if (file.buffer[0] === 0x89 && file.buffer[1] === 0x50 && file.buffer[2] === 0x4e && file.buffer[3] === 0x47) {
+          contentType = 'image/png';
+        } else {
+          contentType = 'image/jpeg';
+        }
+      } else {
+        contentType = 'image/jpeg';
+      }
+    }
 
     console.log(`[R2_ARTIST_IMAGE_START] Uploading artist profile image to R2: key="${r2Key}", size=${file.size || file.buffer.length} bytes, type="${contentType}"`);
 
