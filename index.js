@@ -5,12 +5,13 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { S3Client, PutObjectCommand, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
-
-dotenv.config();
+import { S3Client, PutObjectCommand, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.join(__dirname, '.env') });
+dotenv.config();
 
 const app = express();
 app.use(cors());
@@ -42,12 +43,246 @@ const s3Client = new S3Client({
 });
 
 const profileR2Key = 'config/artist-profile.json';
+const artistsMetadataR2Key = 'config/artists.json';
+const localArtistsFilePath = path.join(__dirname, 'data', 'artists.json');
+const localSongsDbPath = path.join(__dirname, 'data', 'songs_db.json');
 
 const defaultArtistProfile = {
   contactNumber: '8747875269',
   instagramUrl: 'https://www.instagram.com/bhima_bs_',
   youtubeUrl: 'https://www.youtube.com/@HLT_BS_Music/videos',
 };
+
+/**
+ * Helper: Validates that a string is a genuine artist name and not a phone number, contact, or junk tag.
+ */
+function isValidArtistName(name) {
+  if (!name || typeof name !== 'string') return false;
+  const clean = name.trim();
+  if (clean.length < 2 || clean.length > 35) return false;
+
+  // Discard phone numbers or strings with 3+ digits (e.g. "contact 733804116", "9845012345")
+  if (/\d{3,}/.test(clean)) return false;
+
+  const lower = clean.toLowerCase();
+
+  // Blacklisted keywords
+  const blacklistedKeywords = [
+    'contact', 'phone', 'call', 'mobile', 'whatsapp', 'ph no', 'ph.', 'mob.',
+    'subscribe', 'editing', 'editor', 'poster', 'banner', 'thumbnail',
+    'status', 'whatsapp status', 'promo', 'teaser', 'trailer', 'video',
+    'audio', 'full song', 'official video', 'lyrics video', 'jumbenachujumbe',
+    'record', 'recording', 'studio', 'presents', 'production', 'channel',
+    'instagram', 'youtube', 'facebook', 'media', 'company', 'entertainment',
+    'sound', 'music company', 'all rights', 'copyright'
+  ];
+
+  for (const keyword of blacklistedKeywords) {
+    if (lower === keyword || lower.startsWith(keyword + ' ') || lower.endsWith(' ' + keyword)) {
+      return false;
+    }
+  }
+
+  // Must contain at least one letter
+  if (!/[a-zA-Z]/.test(clean)) return false;
+
+  return true;
+}
+
+/**
+ * Helper: Cleans credit prefixes like "lyrics", "singer", "singers", "music by", "by", etc.
+ */
+function cleanArtistToken(token) {
+  if (!token || typeof token !== 'string') return '';
+  let clean = token.trim().replace(/\s+/g, ' ');
+
+  // Strip contact / phone patterns like "contact 733804116", "ph 98450...", "mob 12345...", "+91 98765..." or long digits
+  clean = clean.replace(/(?:contact|phone|call|mob|mobile|whatsapp|ph\.?|mob\.?)\s*(?::|-)?\s*\+?\d[\d\s-]{4,}/gi, '');
+  clean = clean.replace(/\b\d{5,}\b/g, '');
+
+  // Remove leading credit prefixes
+  clean = clean.replace(/^(?:lyrics(?:\s+by)?|singer[s]?(?:\s+by)?|vocal[s]?(?:\s+by)?|composed\s+by|written\s+by|music(?:\s+by)?|produced\s+by|directed\s+by|starring|featuring|feat\.?|ft\.?|by|dialogue[s]?(?:\s+by)?)\s+/i, '');
+
+  // Remove trailing credit suffixes
+  clean = clean.replace(/\s+(?:lyrics|mix|remix|dj\s*mix|full\s*song|song|audio|video|official|music)$/i, '');
+
+  return clean.trim();
+}
+
+/**
+ * Helper: Normalizes artist name carefully for canonical deduplication and grouping.
+ */
+function normalizeArtistName(name) {
+  if (!name || typeof name !== 'string') return 'HLT&BS Official Music';
+  const lowerRaw = name.trim().replace(/\s+/g, ' ').toLowerCase();
+
+  // HLT&BS Channel variations
+  if (lowerRaw === 'hlt&bs' || lowerRaw === 'hlt & bs' || lowerRaw === 'hlt&bs official music' ||
+      lowerRaw === 'hlt & bs official music' || lowerRaw === 'hlt and bs' || lowerRaw === 'hlt official music') {
+    return 'HLT&BS Official Music';
+  }
+
+  let clean = cleanArtistToken(name);
+  if (!clean || !isValidArtistName(clean)) return 'HLT&BS Official Music';
+
+  const lower = clean.toLowerCase();
+
+  // DJ Nagaraj variations
+  if (lower === 'dj nagaraj' || lower === 'dj nagaraja' || lower === 'nagaraja' || lower === 'nagaraj' ||
+      lower === 'dj nagaraj mix' || lower === 'dj nagaraj official' || lower === 'singer nagaraj' ||
+      lower === 'singer nagaraja' || lower === 'singer dj nagaraj' || lower === 'dj nagaraj songs') {
+    return 'DJ Nagaraj';
+  }
+
+  // Praveen Bandri variations
+  if (lower === 'praveen bandri' || lower === 'praveen bandari' || lower === 'singer praveen bandri' ||
+      lower === 'praveen bandri music' || lower === 'praveen') {
+    return 'Praveen Bandri';
+  }
+
+  // Bhima BS variations
+  if (lower === 'bhima bs' || lower === 'bhima b s' || lower === 'bheem bs' || lower === 'bheema bs' ||
+      lower === 'singer bhima bs' || lower === 'lyrics bhima bs') {
+    return 'Bhima BS';
+  }
+
+  // Sumitra variations
+  if (lower === 'sumitra' || lower === 'sumithra' || lower === 'singer sumitra' || lower === 'singer sumithra') {
+    return 'Sumitra';
+  }
+
+  // Gururaj Krg variations
+  if (lower === 'gururaj krg' || lower === 'gururaj' || lower === 'guru krg' || lower === 'gururaja krg') {
+    return 'Gururaj Krg';
+  }
+
+  // Aishu variations
+  if (lower === 'aishu' || lower === 'singer aishu') {
+    return 'Aishu';
+  }
+
+  // Auto Title-Case formatting for any other artist
+  return clean.split(' ').map(w => {
+    if (!w) return '';
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  }).join(' ');
+}
+
+/**
+ * Helper: Splits compound/multi-artist strings (e.g., "Bhima BS & Sumitra", "Aishu and Nagaraj") into individual artist names.
+ */
+function splitArtists(rawString) {
+  if (!rawString || typeof rawString !== 'string') return [];
+  const parts = rawString.split(/\s*(?:&|(?:\band\b)|(?:\bAND\b)|,|\+|\/|\||(?:\bfeat\.?\b)|(?:\bft\.?\b)|(?:\bwith\b))\s*/i);
+  const result = [];
+  for (const part of parts) {
+    const cleaned = cleanArtistToken(part);
+    if (isValidArtistName(cleaned)) {
+      const norm = normalizeArtistName(cleaned);
+      if (norm && norm !== 'HLT&BS Official Music' && !result.includes(norm)) {
+        result.push(norm);
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Helper: Creates a deterministic, URL-safe artist slug identifier.
+ * e.g. "DJ Nagaraj", "dj nagaraj", "DJ NAGARAJ" -> "dj-nagaraj"
+ */
+function getArtistSlug(artistName) {
+  const norm = normalizeArtistName(artistName);
+  return norm.toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'various-artists';
+}
+
+/**
+ * Helper: Finds artist metadata from R2 metadata map by matching canonical slug or aliases
+ */
+function findArtistMetadata(artistsMetadata, slug) {
+  if (!artistsMetadata || typeof artistsMetadata !== 'object') return {};
+  if (artistsMetadata[slug]) return artistsMetadata[slug];
+  for (const [key, meta] of Object.entries(artistsMetadata)) {
+    if (getArtistSlug(key) === slug || (meta && meta.artistName && getArtistSlug(meta.artistName) === slug)) {
+      return meta;
+    }
+  }
+  return {};
+}
+
+/**
+ * Helper: Extracts an array of ALL unique artists involved in a song.
+ */
+function extractArtistsFromSong(title, explicitArtist, channelTitle) {
+  const artists = new Set();
+
+  // 1. If explicitArtist is provided
+  if (explicitArtist && typeof explicitArtist === 'string' && explicitArtist.trim()) {
+    const explicitSplits = splitArtists(explicitArtist);
+    for (const a of explicitSplits) {
+      if (a !== 'HLT&BS Official Music') {
+        artists.add(a);
+      }
+    }
+  }
+
+  // 2. Extract from song title
+  if (title && typeof title === 'string') {
+    const upperTitle = title.toUpperCase();
+
+    if (upperTitle.includes('NAGARAJ') || upperTitle.includes('NAGARAJA')) {
+      artists.add('DJ Nagaraj');
+    }
+    if (upperTitle.includes('PRAVEEN BANDRI') || upperTitle.includes('PRAVEEN BANDARI')) {
+      artists.add('Praveen Bandri');
+    }
+    if (upperTitle.includes('BHIMA BS') || upperTitle.includes('BHIMA B S') || upperTitle.includes('BHEEMA BS')) {
+      artists.add('Bhima BS');
+    }
+    if (upperTitle.includes('SUMITRA') || upperTitle.includes('SUMITHRA')) {
+      artists.add('Sumitra');
+    }
+    if (upperTitle.includes('GURURAJ KRG') || upperTitle.includes('GURURAJ')) {
+      artists.add('Gururaj Krg');
+    }
+    if (upperTitle.includes('AISHU')) {
+      artists.add('Aishu');
+    }
+
+    const matches = title.matchAll(/(?:SINGER[S]?|FEAT\.?|FT\.?|VOCALS?|LYRICS?|MUSIC|BY)\s+([A-Za-z0-9\s&,+\/]+?)(?:\s+(?:DJ|MIX|FULL|OFFICIAL|#|\|\||-)|$)/gi);
+    for (const match of matches) {
+      if (match[1]) {
+        const candidate = match[1].trim();
+        const splits = splitArtists(candidate);
+        for (const a of splits) {
+          if (a !== 'HLT&BS Official Music') {
+            artists.add(a);
+          }
+        }
+      }
+    }
+  }
+
+  if (artists.size === 0) {
+    if (explicitArtist && typeof explicitArtist === 'string' && isValidArtistName(explicitArtist)) {
+      artists.add(normalizeArtistName(explicitArtist));
+    } else {
+      artists.add(normalizeArtistName(channelTitle || 'HLT&BS Official Music'));
+    }
+  }
+
+  return Array.from(artists);
+}
+
+/**
+ * Helper: Extracts single primary artist from song for backward compatibility.
+ */
+function extractArtistFromSong(title, explicitArtist, channelTitle) {
+  const list = extractArtistsFromSong(title, explicitArtist, channelTitle);
+  return list.length > 0 ? list.join(' & ') : 'HLT&BS Official Music';
+}
 
 /**
  * Helper: Asynchronously reads config/artist-profile.json from Cloudflare R2 bucket.
@@ -86,6 +321,134 @@ async function saveArtistProfileToR2(profileData) {
 }
 
 /**
+ * Helper: Asynchronously reads config/artists.json from Cloudflare R2 bucket with local fallback.
+ */
+async function fetchArtistsMetadataFromR2() {
+  try {
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: artistsMetadataR2Key,
+    });
+    const response = await s3Client.send(command);
+    const bodyText = await response.Body.transformToString('utf-8');
+    const parsed = JSON.parse(bodyText);
+    return parsed;
+  } catch (err) {
+    if (err.name !== 'NoSuchKey' && err.$metadata?.httpStatusCode !== 404) {
+      console.warn('[R2_ARTISTS_READ_WARN] Could not fetch artists from R2:', err.message || err);
+    }
+    if (fs.existsSync(localArtistsFilePath)) {
+      try {
+        return JSON.parse(fs.readFileSync(localArtistsFilePath, 'utf-8'));
+      } catch (_) {}
+    }
+    return {};
+  }
+}
+
+/**
+ * Helper: Asynchronously uploads/overwrites config/artists.json in Cloudflare R2 bucket.
+ */
+async function saveArtistsMetadataToR2(artistsMap) {
+  const jsonString = JSON.stringify(artistsMap, null, 2);
+  try {
+    const command = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: artistsMetadataR2Key,
+      Body: Buffer.from(jsonString, 'utf-8'),
+      ContentType: 'application/json',
+    });
+    await s3Client.send(command);
+    console.log(`[R2_ARTISTS_SAVED] Persisted config/artists.json to Cloudflare R2 bucket "${bucketName}"`);
+  } catch (err) {
+    console.error('[R2_ARTISTS_SAVE_ERROR] Failed persisting artists to R2:', err);
+  }
+
+  // Backup to local file
+  try {
+    const dataDir = path.dirname(localArtistsFilePath);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    fs.writeFileSync(localArtistsFilePath, jsonString, 'utf-8');
+  } catch (_) {}
+}
+
+/**
+ * Helper: Reads local songs database
+ */
+function getLocalSongsDb() {
+  if (fs.existsSync(localSongsDbPath)) {
+    try {
+      return JSON.parse(fs.readFileSync(localSongsDbPath, 'utf-8'));
+    } catch (_) {}
+  }
+  return {};
+}
+
+/**
+ * Helper: Saves local songs database
+ */
+function saveLocalSongsDb(db) {
+  try {
+    const dataDir = path.dirname(localSongsDbPath);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    fs.writeFileSync(localSongsDbPath, JSON.stringify(db, null, 2), 'utf-8');
+  } catch (_) {}
+}
+
+/**
+ * Helper: Aggregates all known songs from local DB and live R2 objects
+ */
+async function getAllKnownSongs() {
+  const localDb = getLocalSongsDb();
+  const r2Objects = await fetchAllR2Objects();
+  const songsMap = { ...localDb };
+
+  for (const obj of r2Objects) {
+    if (!obj.Key) continue;
+    if (obj.Key.startsWith('config/') || obj.Key.startsWith('artists/')) continue;
+
+    const youtubeVideoId = extractYoutubeIdFromKey(obj.Key);
+    if (!youtubeVideoId) continue;
+
+    const audioUrl = `${publicDomain}/${encodeURIComponent(obj.Key).replaceAll('%2F', '/')}`;
+    if (!songsMap[youtubeVideoId]) {
+      const cleanName = obj.Key.split('/').pop().replace(/\.(mp3|m4a|wav)$/i, '');
+      const rawTitle = cleanName.includes('__') ? cleanName.split('__')[1].replaceAll('_', ' ') : cleanName;
+      const detectedArtist = extractArtistFromSong(rawTitle, null, 'HLT&BS Official Music');
+
+      songsMap[youtubeVideoId] = {
+        youtubeVideoId,
+        songTitle: rawTitle,
+        artist: detectedArtist,
+        duration: '0:00',
+        r2Key: obj.Key,
+        publicUrl: audioUrl,
+        r2ObjectKey: obj.Key,
+        r2AudioUrl: audioUrl,
+        fileSize: obj.Size,
+        lastModified: obj.LastModified,
+        uploadStatus: 'UPLOADED',
+      };
+    } else {
+      songsMap[youtubeVideoId].r2Key = obj.Key;
+      songsMap[youtubeVideoId].r2ObjectKey = obj.Key;
+      songsMap[youtubeVideoId].publicUrl = audioUrl;
+      songsMap[youtubeVideoId].r2AudioUrl = audioUrl;
+      songsMap[youtubeVideoId].uploadStatus = 'UPLOADED';
+      if (!songsMap[youtubeVideoId].artist) {
+        songsMap[youtubeVideoId].artist = extractArtistFromSong(songsMap[youtubeVideoId].songTitle, null, 'HLT&BS Official Music');
+      }
+    }
+  }
+
+  return songsMap;
+}
+
+/**
  * Helper: Lists all objects directly from Cloudflare R2 bucket.
  * Handles pagination for > 1000 items.
  */
@@ -116,26 +479,57 @@ async function fetchAllR2Objects() {
 }
 
 /**
+ * Helper: Sanitizes a song title for a safe R2 filename key.
+ * - Removes invalid filesystem/URL characters
+ * - Replaces spaces with _
+ * - Limits length (max 50 chars)
+ * - Removes leading/trailing underscores
+ */
+function sanitizeTitle(title) {
+  if (!title) return '';
+  let clean = title.replace(/[^a-zA-Z0-9_\-\s]/g, '');
+  clean = clean.trim().replace(/\s+/g, '_');
+  clean = clean.replace(/^_+|_+$/g, '');
+  if (clean.length > 50) {
+    clean = clean.substring(0, 50).replace(/_+$/g, '');
+  }
+  return clean;
+}
+
+/**
  * Helper: Extracts YouTube Video ID from R2 object Key using multiple matching strategies.
+ * Handles both:
+ * - Old format: music/8_vJvjkTUSQ.mp3, 8_vJvjkTUSQ.mp3, music/[8_vJvjkTUSQ].mp3
+ * - New format: music/8_vJvjkTUSQ__Bheema_Official_Song.mp3
+ * Strictly returns an 11-char YouTube ID matching /^[a-zA-Z0-9_-]{11}$/ or null if not found.
  */
 function extractYoutubeIdFromKey(key) {
   if (!key) return null;
 
   const cleanKey = key.split('/').pop() || key;
 
-  // 1. Explicit bracket pattern e.g. [Rxsdi6JIj-8]
+  // 1. Double underscore separator e.g. 8_vJvjkTUSQ__Bheema_Official_Song.mp3
+  if (cleanKey.includes('__')) {
+    const parts = cleanKey.split('__');
+    const candidate = parts[0].trim();
+    if (/^[a-zA-Z0-9_-]{11}$/.test(candidate)) {
+      return candidate;
+    }
+  }
+
+  // 2. Explicit bracket pattern e.g. [Rxsdi6JIj-8]
   const bracketMatch = cleanKey.match(/\[([a-zA-Z0-9_-]{11})\]/);
   if (bracketMatch && bracketMatch[1]) {
     return bracketMatch[1];
   }
 
-  // 2. Exact 11-char YouTube ID filename (with or without audio/video extension)
+  // 3. Exact 11-char YouTube ID filename (with audio/video extension stripped)
   const baseName = cleanKey.replace(/\.(mp3|m4a|wav|flac|aac|ogg|mp4)$/i, '');
   if (/^[a-zA-Z0-9_-]{11}$/.test(baseName)) {
     return baseName;
   }
 
-  // 3. Prefix pattern e.g. music/8_vJvjkTUSQ.mp3 or songs/8_vJvjkTUSQ.mp3
+  // 4. Prefix pattern e.g. music/8_vJvjkTUSQ.mp3
   const pathParts = key.split('/');
   for (const part of pathParts) {
     const partBase = part.replace(/\.(mp3|m4a|wav|flac|aac|ogg|mp4)$/i, '');
@@ -144,7 +538,7 @@ function extractYoutubeIdFromKey(key) {
     }
   }
 
-  return baseName;
+  return null;
 }
 
 /**
@@ -187,6 +581,250 @@ app.get('/api/artist/profile', async (req, res) => {
   } catch (err) {
     console.error('[R2_PROFILE_GET_ERROR]', err);
     res.json({ success: true, source: 'Default_Fallback', profile: defaultArtistProfile });
+  }
+});
+
+/**
+ * GET /api/artists and GET /admin/artists
+ * Returns all detected artists with persistent profile images and metadata from Cloudflare R2 and song counts.
+ */
+app.get(['/api/artists', '/admin/artists'], async (req, res) => {
+  try {
+    const songsMap = await getAllKnownSongs();
+    const artistsMetadata = await fetchArtistsMetadataFromR2();
+
+    const artistGroupMap = {};
+
+    for (const song of Object.values(songsMap)) {
+      if (!song.youtubeVideoId) continue;
+      const artistNames = extractArtistsFromSong(song.songTitle, song.artist, 'HLT&BS Official Music');
+
+      for (const artistName of artistNames) {
+        const artistId = getArtistSlug(artistName);
+
+        if (!artistGroupMap[artistId]) {
+          const metadata = findArtistMetadata(artistsMetadata, artistId);
+          const hasCustomImage = Boolean(metadata.hasCustomImage || (metadata.profileImageUrl && !metadata.profileImageUrl.includes('default')));
+          const profileImageUrl = metadata.profileImageUrl || `${publicDomain}/artists/${artistId}/profile.jpg`;
+
+          artistGroupMap[artistId] = {
+            artistId,
+            artistName: metadata.artistName || artistName,
+            profileImageUrl,
+            hasCustomImage,
+            instagramUrl: metadata.instagramUrl || '',
+            bio: metadata.bio || '',
+            songCount: 0,
+            updatedAt: metadata.updatedAt || null,
+          };
+        }
+
+        artistGroupMap[artistId].songCount++;
+      }
+    }
+
+    // Convert map to list and sort by song count descending
+    const artistsList = Object.values(artistGroupMap).sort((a, b) => b.songCount - a.songCount);
+
+    return res.json({
+      success: true,
+      count: artistsList.length,
+      artists: artistsList,
+    });
+  } catch (err) {
+    console.error('[API_GET_ARTISTS_ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to fetch artists' });
+  }
+});
+
+/**
+ * GET /api/artists/:artistId and GET /admin/artists/:artistId
+ * Returns artist profile details and ONLY songs belonging to that artist.
+ */
+app.get(['/api/artists/:artistId', '/admin/artists/:artistId'], async (req, res) => {
+  try {
+    const { artistId } = req.params;
+    const targetSlug = getArtistSlug(artistId);
+
+    const songsMap = await getAllKnownSongs();
+    const artistsMetadata = await fetchArtistsMetadataFromR2();
+    const metadata = findArtistMetadata(artistsMetadata, targetSlug);
+
+    const matchingSongs = [];
+    let resolvedArtistName = metadata.artistName || '';
+
+    for (const song of Object.values(songsMap)) {
+      if (!song.youtubeVideoId) continue;
+      const artistNames = extractArtistsFromSong(song.songTitle, song.artist, 'HLT&BS Official Music');
+      const songArtistSlugs = artistNames.map(getArtistSlug);
+
+      if (songArtistSlugs.includes(targetSlug)) {
+        const specificName = artistNames.find(name => getArtistSlug(name) === targetSlug) || artistNames[0];
+        if (!resolvedArtistName) resolvedArtistName = specificName;
+        matchingSongs.push({
+          id: song.youtubeVideoId,
+          title: song.songTitle,
+          artist: artistNames.join(' & '),
+          artistId: targetSlug,
+          duration: song.duration || '0:00',
+          formattedDuration: song.duration || '0:00',
+          thumbnailUrl: `https://i.ytimg.com/vi/${song.youtubeVideoId}/hqdefault.jpg`,
+          audioUrl: song.publicUrl || song.r2AudioUrl || null,
+          isAudioUploaded: !!(song.publicUrl || song.r2AudioUrl),
+        });
+      }
+    }
+
+    if (!resolvedArtistName) {
+      resolvedArtistName = normalizeArtistName(artistId.replaceAll('-', ' '));
+    }
+
+    const hasCustomImage = Boolean(metadata.hasCustomImage || (metadata.profileImageUrl && !metadata.profileImageUrl.includes('default')));
+    const profileImageUrl = metadata.profileImageUrl || `${publicDomain}/artists/${targetSlug}/profile.jpg`;
+
+    return res.json({
+      success: true,
+      artist: {
+        artistId: targetSlug,
+        artistName: resolvedArtistName,
+        profileImageUrl,
+        hasCustomImage,
+        instagramUrl: metadata.instagramUrl || '',
+        bio: metadata.bio || '',
+        songCount: matchingSongs.length,
+        songs: matchingSongs,
+        updatedAt: metadata.updatedAt || null,
+      },
+    });
+  } catch (err) {
+    console.error('[API_GET_ARTIST_DETAIL_ERROR]', err);
+    return res.status(500).json({ success: false, error: err.message || 'Failed to fetch artist details' });
+  }
+});
+
+/**
+ * POST /admin/artists/:artistId/profile and POST /api/artists/:artistId/profile
+ * Updates artist profile metadata (artistName, instagramUrl, bio) and persists to Cloudflare R2.
+ */
+app.post([
+  '/admin/artists/:artistId/profile',
+  '/api/artists/:artistId/profile',
+  '/admin/artists/:artistId',
+  '/api/artists/:artistId',
+], async (req, res) => {
+  try {
+    const { artistId } = req.params;
+    const { artistName, instagramUrl, bio } = req.body;
+
+    const safeSlug = getArtistSlug(artistId);
+    const currentMetadata = await fetchArtistsMetadataFromR2();
+    const existing = currentMetadata[safeSlug] || {};
+
+    const updatedProfile = {
+      artistId: safeSlug,
+      artistName: (artistName && artistName.trim()) || existing.artistName || normalizeArtistName(safeSlug.replaceAll('-', ' ')),
+      profileImageUrl: existing.profileImageUrl || `${publicDomain}/artists/${safeSlug}/profile.jpg`,
+      hasCustomImage: existing.hasCustomImage || false,
+      instagramUrl: instagramUrl !== undefined ? String(instagramUrl).trim() : (existing.instagramUrl || ''),
+      bio: bio !== undefined ? String(bio).trim() : (existing.bio || ''),
+      updatedAt: new Date().toISOString(),
+    };
+
+    currentMetadata[safeSlug] = updatedProfile;
+    await saveArtistsMetadataToR2(currentMetadata);
+
+    console.log(`[R2_ARTIST_PROFILE_SAVED] Profile for artist "${safeSlug}" saved to R2 config/artists.json`);
+
+    return res.json({
+      success: true,
+      message: 'Artist profile updated and persisted to Cloudflare R2',
+      artist: updatedProfile,
+    });
+  } catch (err) {
+    console.error('[R2_ARTIST_PROFILE_POST_ERROR]', err);
+    return res.status(500).json({
+      success: false,
+      error: `Failed to update artist profile in Cloudflare R2: ${err.message || err.toString()}`,
+    });
+  }
+});
+
+/**
+ * POST /admin/artists/:artistId/profile-image and POST /api/artists/:artistId/profile-image
+ * Uploads/changes artist profile image directly to Cloudflare R2 and persists config/artists.json in R2.
+ */
+app.post([
+  '/admin/artists/:artistId/profile-image',
+  '/api/artists/:artistId/profile-image',
+  '/admin/artists/:artistId/image',
+  '/api/artists/:artistId/image',
+], (req, res, next) => {
+  upload.any()(req, res, (err) => {
+    if (err) return res.status(400).json({ success: false, error: `Multer file parsing error: ${err.message}` });
+    req.file = req.files?.[0] || req.file;
+    next();
+  });
+}, async (req, res) => {
+  try {
+    const { artistId } = req.params;
+    const { artistName } = req.body;
+    const file = req.file;
+
+    if (!file || !file.buffer || file.buffer.length === 0) {
+      return res.status(400).json({ success: false, error: 'No image file uploaded or file buffer is empty.' });
+    }
+
+    const safeSlug = getArtistSlug(artistId);
+    const r2Key = `artists/${safeSlug}/profile.jpg`;
+    const contentType = file.mimetype || 'image/jpeg';
+
+    console.log(`[R2_ARTIST_IMAGE_START] Uploading artist profile image to R2: key="${r2Key}", size=${file.size || file.buffer.length} bytes, type="${contentType}"`);
+
+    const putCommand = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: r2Key,
+      Body: file.buffer,
+      ContentType: contentType,
+      Metadata: {
+        artistId: safeSlug,
+        uploadedBy: 'admin-panel',
+      },
+    });
+
+    await s3Client.send(putCommand);
+
+    const imageUrl = `${publicDomain}/${r2Key}`;
+
+    // Read current artists metadata from R2, update, and write back to R2
+    const currentMetadata = await fetchArtistsMetadataFromR2();
+    const existing = currentMetadata[safeSlug] || {};
+
+    currentMetadata[safeSlug] = {
+      ...existing,
+      artistId: safeSlug,
+      artistName: (artistName && artistName.trim()) || existing.artistName || normalizeArtistName(safeSlug.replaceAll('-', ' ')),
+      profileImageUrl: imageUrl,
+      hasCustomImage: true,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await saveArtistsMetadataToR2(currentMetadata);
+
+    console.log(`[R2_ARTIST_IMAGE_SUCCESS] Artist ${safeSlug} profile image persisted to R2: ${imageUrl}`);
+
+    return res.json({
+      success: true,
+      message: 'Artist profile image uploaded and persisted to Cloudflare R2',
+      artistId: safeSlug,
+      profileImageUrl: imageUrl,
+      artist: currentMetadata[safeSlug],
+    });
+  } catch (err) {
+    console.error('[R2_ARTIST_IMAGE_ERROR] Upload failed:', err);
+    return res.status(500).json({
+      success: false,
+      error: `Cloudflare R2 image upload failed: ${err.message || err.toString()}`,
+    });
   }
 });
 
@@ -250,7 +888,7 @@ app.get('/admin/songs/status', async (req, res) => {
         uploadStatus: 'UPLOADED',
       };
 
-      // Map primary key (extracted YouTube ID or clean baseName)
+      // Map primary key (extracted YouTube ID)
       songsMap[youtubeVideoId] = songData;
 
       // Also map raw obj.Key if different to support fallback matches
@@ -301,6 +939,7 @@ app.get('/admin/r2/files', async (req, res) => {
 /**
  * POST /admin/upload-song
  * REAL Cloudflare R2 Multipart File Upload with DUPLICATE UPLOAD PROTECTION
+ * Uses NEW naming convention: music/<youtubeVideoId>__<safeSongTitle>.<ext> for new uploads
  */
 app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
   try {
@@ -316,7 +955,7 @@ app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
     const existingObject = r2Objects.find(obj => {
       if (!obj.Key) return false;
       const ytId = extractYoutubeIdFromKey(obj.Key);
-      return ytId === youtubeVideoId || obj.Key.includes(youtubeVideoId);
+      return ytId === youtubeVideoId;
     });
 
     if (existingObject) {
@@ -357,8 +996,13 @@ app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
     if (lowerName.endsWith('.m4a')) ext = '.m4a';
     if (lowerName.endsWith('.wav')) ext = '.wav';
 
-    // R2 Object Key: music/<youtubeVideoId>.<ext>
-    const objectKey = `music/${youtubeVideoId}${ext}`;
+    // R2 Object Key format for NEW uploads:
+    // music/<youtubeVideoId>__<safeSongTitle>.<ext>
+    const rawTitle = songTitle || req.body?.songTitle || req.body?.title || req.body?.song_title || '';
+    const safeTitle = sanitizeTitle(rawTitle);
+    const objectKey = safeTitle
+      ? `music/${youtubeVideoId}__${safeTitle}${ext}`
+      : `music/${youtubeVideoId}${ext}`;
 
     // Determine Content-Type header
     let contentType = 'audio/mpeg';
@@ -375,6 +1019,7 @@ app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
       ContentType: contentType,
       Metadata: {
         youtubeId: youtubeVideoId,
+        songTitle: songTitle || '',
         uploadedBy: 'admin-panel',
       },
     });
@@ -388,7 +1033,7 @@ app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
     const songEntry = {
       youtubeVideoId,
       songTitle: songTitle || 'Untitled Song',
-      artist: artist || 'HLT&BS Official Music',
+      artist: artist ? normalizeArtistName(artist) : extractArtistFromSong(songTitle, null, 'HLT&BS Official Music'),
       duration: duration || '0:00',
       r2Key: objectKey,
       publicUrl: audioUrl,
@@ -400,6 +1045,11 @@ app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
       uploadStatus: 'UPLOADED',
       etag: r2Response.ETag,
     };
+
+    // Save to local songs db
+    const localDb = getLocalSongsDb();
+    localDb[youtubeVideoId] = songEntry;
+    saveLocalSongsDb(localDb);
 
     return res.json({
       success: true,
@@ -419,6 +1069,74 @@ app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
     return res.status(500).json({
       success: false,
       error: `Cloudflare R2 Upload Failed: ${err.message || err.toString()}`,
+    });
+  }
+});
+
+/**
+ * DELETE /admin/songs/:id
+ * Safely deletes an audio file from Cloudflare R2 and removes its metadata from the song catalog database.
+ * Strict Error Safety: If R2 deletion fails, the local catalog record is NOT removed.
+ */
+app.delete('/admin/songs/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'Missing song ID parameter.' });
+    }
+
+    const localDb = getLocalSongsDb();
+    let exactR2Key = localDb[id]?.r2ObjectKey || localDb[id]?.r2Key || null;
+
+    // If not directly found in local db, scan live R2 objects
+    if (!exactR2Key) {
+      const r2Objects = await fetchAllR2Objects();
+      const matchingObject = r2Objects.find(obj => {
+        if (!obj.Key) return false;
+        const ytId = extractYoutubeIdFromKey(obj.Key);
+        return ytId === id || obj.Key === id;
+      });
+      if (matchingObject) {
+        exactR2Key = matchingObject.Key;
+      }
+    }
+
+    if (!exactR2Key) {
+      console.warn(`[R2_DELETE_NOT_FOUND] Song ${id} not found in Cloudflare R2 bucket or local DB`);
+      return res.status(404).json({
+        success: false,
+        error: `Song with ID "${id}" was not found in storage or catalog database.`,
+      });
+    }
+
+    console.log(`[R2_DELETE_START] Deleting R2 object key: "${exactR2Key}" for song ID "${id}" from bucket "${bucketName}"`);
+
+    // 1. Delete object directly from Cloudflare R2
+    const deleteCommand = new DeleteObjectCommand({
+      Bucket: bucketName,
+      Key: exactR2Key,
+    });
+
+    await s3Client.send(deleteCommand);
+    console.log(`[R2_DELETE_SUCCESS] Confirmed deletion of "${exactR2Key}" from Cloudflare R2 bucket`);
+
+    // 2. Only remove from catalog AFTER Cloudflare R2 deletion successfully completes
+    delete localDb[id];
+    delete localDb[exactR2Key];
+    saveLocalSongsDb(localDb);
+
+    return res.json({
+      success: true,
+      message: 'Song deleted successfully from Cloudflare R2 and catalog.',
+      youtubeVideoId: id,
+      deletedKey: exactR2Key,
+    });
+  } catch (err) {
+    console.error('[R2_DELETE_ERROR] Failed deleting song from Cloudflare R2:', err);
+    return res.status(500).json({
+      success: false,
+      error: 'Unable to delete the file from storage. Song was not removed.',
+      details: err.message || err.toString(),
     });
   }
 });
