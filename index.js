@@ -851,7 +851,7 @@ app.post([
     const updatedProfile = {
       artistId: safeSlug,
       artistName: (artistName && artistName.trim()) || existing.artistName || normalizeArtistName(safeSlug.replaceAll('-', ' ')),
-      profileImageUrl: existing.profileImageUrl || `${publicDomain}/artists/${safeSlug}/profile.jpg`,
+      profileImageUrl: existing.hasCustomImage ? (existing.profileImageUrl || `${publicDomain}/artists/${safeSlug}/profile.jpg`) : '',
       hasCustomImage: existing.hasCustomImage || false,
       instagramUrl: instagramUrl !== undefined ? String(instagramUrl).trim() : (existing.instagramUrl || ''),
       bio: bio !== undefined ? String(bio).trim() : (existing.bio || ''),
