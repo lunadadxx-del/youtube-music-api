@@ -708,7 +708,9 @@ app.get(['/api/artists', '/admin/artists'], async (req, res) => {
             artistName: metadata.artistName || artistName,
             profileImageUrl,
             hasCustomImage,
+            contactNumber: metadata.contactNumber || '',
             instagramUrl: metadata.instagramUrl || '',
+            youtubeUrl: metadata.youtubeUrl || '',
             bio: metadata.bio || '',
             songCount: 0,
             updatedAt: metadata.updatedAt || null,
@@ -730,7 +732,9 @@ app.get(['/api/artists', '/admin/artists'], async (req, res) => {
         artistGroupMap[canonicalSlug].artistName = meta.artistName || artistGroupMap[canonicalSlug].artistName;
         artistGroupMap[canonicalSlug].hasCustomImage = hasCustomImage;
         artistGroupMap[canonicalSlug].profileImageUrl = profileImageUrl;
+        artistGroupMap[canonicalSlug].contactNumber = meta.contactNumber || artistGroupMap[canonicalSlug].contactNumber || '';
         artistGroupMap[canonicalSlug].instagramUrl = meta.instagramUrl || artistGroupMap[canonicalSlug].instagramUrl;
+        artistGroupMap[canonicalSlug].youtubeUrl = meta.youtubeUrl || artistGroupMap[canonicalSlug].youtubeUrl || '';
         artistGroupMap[canonicalSlug].bio = meta.bio || artistGroupMap[canonicalSlug].bio;
         artistGroupMap[canonicalSlug].updatedAt = meta.updatedAt || artistGroupMap[canonicalSlug].updatedAt;
       } else {
@@ -739,7 +743,9 @@ app.get(['/api/artists', '/admin/artists'], async (req, res) => {
           artistName: meta.artistName || normalizeArtistName(canonicalSlug.replaceAll('-', ' ')),
           profileImageUrl,
           hasCustomImage,
+          contactNumber: meta.contactNumber || '',
           instagramUrl: meta.instagramUrl || '',
+          youtubeUrl: meta.youtubeUrl || '',
           bio: meta.bio || '',
           songCount: 0,
           updatedAt: meta.updatedAt || null,
@@ -817,7 +823,9 @@ app.get(['/api/artists/:artistId', '/admin/artists/:artistId'], async (req, res)
         artistName: resolvedArtistName,
         profileImageUrl,
         hasCustomImage,
+        contactNumber: metadata.contactNumber || '',
         instagramUrl: metadata.instagramUrl || '',
+        youtubeUrl: metadata.youtubeUrl || '',
         bio: metadata.bio || '',
         songCount: matchingSongs.length,
         songs: matchingSongs,
@@ -842,7 +850,7 @@ app.post([
 ], async (req, res) => {
   try {
     const { artistId } = req.params;
-    const { artistName, instagramUrl, bio } = req.body;
+    const { artistName, contactNumber, instagramUrl, youtubeUrl, bio } = req.body;
 
     const safeSlug = getArtistSlug(artistId);
     const currentMetadata = await fetchArtistsMetadataFromR2();
@@ -853,7 +861,9 @@ app.post([
       artistName: (artistName && artistName.trim()) || existing.artistName || normalizeArtistName(safeSlug.replaceAll('-', ' ')),
       profileImageUrl: existing.hasCustomImage ? (existing.profileImageUrl || `${publicDomain}/artists/${safeSlug}/profile.jpg`) : '',
       hasCustomImage: existing.hasCustomImage || false,
+      contactNumber: contactNumber !== undefined ? String(contactNumber).trim() : (existing.contactNumber || ''),
       instagramUrl: instagramUrl !== undefined ? String(instagramUrl).trim() : (existing.instagramUrl || ''),
+      youtubeUrl: youtubeUrl !== undefined ? String(youtubeUrl).trim() : (existing.youtubeUrl || ''),
       bio: bio !== undefined ? String(bio).trim() : (existing.bio || ''),
       updatedAt: new Date().toISOString(),
     };
