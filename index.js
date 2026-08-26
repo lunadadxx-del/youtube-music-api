@@ -78,7 +78,9 @@ function isValidArtistName(name) {
     'folksong', 'folk song', 'full song tag', 'coming soon', 'bay thara chori kay super',
     'new coming soon song', 'banjara new feeling song', 'banjara comedy dj song',
     'banjara pre wedding shoot', 'banjara love feeling song', 'holi song',
-    'banjara holi old lyrics dj songs', 'super chori', 'banjara song', 'banjara dj song'
+    'banjara holi old lyrics dj songs', 'super chori', 'banjara song', 'banjara dj song',
+    'super', 'dj songs', 'banjara', 'girls dance', 'dj dance video', 'caming soon',
+    'shoot video', 'runningsuccessfully', 'sasu bodi', 'comedy', 'kalinasha song', 'new'
   ];
 
   for (const keyword of blacklistedKeywords) {
@@ -108,9 +110,382 @@ function cleanArtistToken(token) {
   clean = clean.replace(/^(?:lyrics(?:\s+by)?|singing(?:\s+by)?|singer[s]?(?:\s+by)?|singin[s]?(?:\s+by)?|singar[s]?(?:\s+by)?|vocal[s]?(?:\s+by)?|composed\s+by|written\s+by|music(?:\s+by)?|produced\s+by|directed\s+by|starring|featuring|feat\.?|ft\.?|by|dialogue[s]?(?:\s+by)?)\s+/i, '');
 
   // Remove trailing credit suffixes
-  clean = clean.replace(/\s+(?:lyrics|mix|remix|dj\s*mix|full\s*song|song|audio|video|official|music|edm\s*mix|official\s*video|pre\s*wedding\s*shoot|comedy\s*dj\s*song|dance|video\s*song)$/i, '');
+  clean = clean.replace(/\s+(?:lyrics|mix|remix|dj\s*mix|full\s*song|song|audio|video|official|music|edm\s*mix|official\s*video|pre\s*wedding\s*shoot|comedy\s*dj\s*song|dance|video\s*song|caming\s*soon|coming\s*soon)$/i, '');
 
   return clean.trim();
+}
+
+/**
+ * Canonical artists directory mapping all spelling/title variations to permanent canonical identities
+ */
+const CANONICAL_ARTISTS_CATALOG = [
+  {
+    name: 'DJ Nagaraj',
+    slug: 'dj-nagaraj',
+    aliases: [
+      'dj nagaraj', 'dj nagaraja', 'nagaraja', 'nagaraj', 'nagaraj dj', 'nagaraja dj',
+      'singer nagaraj', 'singer nagaraja', 'singer dj nagaraj', 'dj nagaraj mix',
+      'dj nagaraj official', 'dj nagaraj songs', 'singing nagaraj dj', 'singing nagaraja dj'
+    ]
+  },
+  {
+    name: 'Praveen Bandri',
+    slug: 'praveen-bandri',
+    aliases: [
+      'praveen bandri', 'praveen bandari', 'singer praveen bandri', 'praveen bandri music',
+      'praveen', 'singing praveen bandri'
+    ]
+  },
+  {
+    name: 'Bhima BS',
+    slug: 'bhima-bs',
+    aliases: [
+      'bhima bs', 'bhima b s', 'bheem bs', 'bheema bs', 'singer bhima bs',
+      'lyrics bhima bs', 'bhima_bs', 'bhima bs studio', 'bhima'
+    ]
+  },
+  {
+    name: 'Sunil BS',
+    slug: 'sunil-bs',
+    aliases: [
+      'sunil bs', 'sunil b s', 'sunil_bs', 'sunil', 'singer sunil bs',
+      'singing sunil bs', 'singin sunil bs', 'singing by sunil'
+    ]
+  },
+  {
+    name: 'Gururaj Krg',
+    slug: 'gururaj-krg',
+    aliases: [
+      'gururaj krg', 'gururaj', 'guru krg', 'gururaja krg', 'singer gururaja krg',
+      'guru raj krg', 'singing guru raj krg', 'singing gururaj krg', 'guru raj',
+      'gururaj k', 'gururaj k a', 'singer gururaj'
+    ]
+  },
+  {
+    name: 'Harish HLT',
+    slug: 'harish-hlt',
+    aliases: [
+      'harish hlt', 'harish', 'h harish', 'dj harish hlt', 'dj harish', 'harish_hlt'
+    ]
+  },
+  {
+    name: 'Lakshman Vakdoth',
+    slug: 'lakshman-vakdoth',
+    aliases: [
+      'lakshman vakdoth', 'laxman vakdoth', 'lokeshman vakdoth', 'lakshman', 'laxman',
+      'singar lakshman vakdoth', 'laxman vakdoth'
+    ]
+  },
+  {
+    name: 'LD Annapa',
+    slug: 'ld-annapa',
+    aliases: [
+      'ld annapa', 'ld annappa', 'annapa', 'annappa', 'singer ld annapa'
+    ]
+  },
+  {
+    name: 'Duniya LG',
+    slug: 'duniya-lg',
+    aliases: [
+      'duniya lg', 'duniya', 'duniya_lg'
+    ]
+  },
+  {
+    name: 'M Kubera Naik',
+    slug: 'm-kubera-naik',
+    aliases: [
+      'm kubera naik', 'm kuber naik', 'kubera naik', 'kuber naik', 'kubera'
+    ]
+  },
+  {
+    name: 'Raja RL',
+    slug: 'raja-rl',
+    aliases: [
+      'raja rl', 'raja ai', 'raja', 'raja rl caming soon', 'raja_rl'
+    ]
+  },
+  {
+    name: 'Sanjana Lambani',
+    slug: 'sanjana-lambani',
+    aliases: [
+      'sanjana lambani', 'sanjana lamani', 'sanjana'
+    ]
+  },
+  {
+    name: 'Jeeva PS',
+    slug: 'jeeva-ps',
+    aliases: [
+      'jeeva ps', 'teeva ps', 'jeeva'
+    ]
+  },
+  {
+    name: 'MJPS',
+    slug: 'mjps',
+    aliases: [
+      'mjps'
+    ]
+  },
+  {
+    name: 'Sumitra',
+    slug: 'sumitra',
+    aliases: [
+      'sumitra', 'sumithra', 'singer sumitra', 'singer sumithra'
+    ]
+  },
+  {
+    name: 'Aishu',
+    slug: 'aishu',
+    aliases: [
+      'aishu', 'singer aishu'
+    ]
+  },
+  {
+    name: 'S.M Somesh Naik',
+    slug: 's-m-somesh-naik',
+    aliases: [
+      's.m somesh naik', 'somesh naik', 'sm somesh naik', 's.m somesh', 's.m_somesh', 'somesh'
+    ]
+  },
+  {
+    name: 'N Lokesh Naik',
+    slug: 'n-lokesh-naik',
+    aliases: [
+      'n lokesh naik', 'lokesh naik', 'n lokesh'
+    ]
+  },
+  {
+    name: 'Janu Lambani',
+    slug: 'janu-lambani',
+    aliases: [
+      'janu lambani'
+    ]
+  },
+  {
+    name: 'B N Prashantha',
+    slug: 'b-n-prashantha',
+    aliases: [
+      'b n prashantha', 'bn prashantha', 'prashantha'
+    ]
+  },
+  {
+    name: 'Renu Rathod',
+    slug: 'renu-rathod',
+    aliases: [
+      'renu rathod'
+    ]
+  },
+  {
+    name: 'Hundar Krishna',
+    slug: 'hundar-krishna',
+    aliases: [
+      'hundar krishna'
+    ]
+  },
+  {
+    name: 'CHS Banjar',
+    slug: 'chs-banjar',
+    aliases: [
+      'chs banjar', 'chs banjara'
+    ]
+  },
+  {
+    name: 'Chetu CH',
+    slug: 'chetu-ch',
+    aliases: [
+      'chetu ch'
+    ]
+  },
+  {
+    name: 'Tukaram PS',
+    slug: 'tukaram-ps',
+    aliases: [
+      'tukaram ps'
+    ]
+  },
+  {
+    name: 'Kalpana Pawar',
+    slug: 'kalpana-pawar',
+    aliases: [
+      'kalpana pawar', 'kalpana'
+    ]
+  },
+  {
+    name: 'Vishwanath',
+    slug: 'vishwanath',
+    aliases: [
+      'vishwanath'
+    ]
+  },
+  {
+    name: 'Ashwini',
+    slug: 'ashwini',
+    aliases: [
+      'ashwini'
+    ]
+  },
+  {
+    name: 'Ravi Kiran',
+    slug: 'ravi-kiran',
+    aliases: [
+      'ravi kiran'
+    ]
+  },
+  {
+    name: 'Appu',
+    slug: 'appu',
+    aliases: [
+      'appu'
+    ]
+  },
+  {
+    name: 'Krishna Kakkur',
+    slug: 'krishna-kakkur',
+    aliases: [
+      'krishna kakkur'
+    ]
+  },
+  {
+    name: 'Kirti Lamani',
+    slug: 'kirti-lamani',
+    aliases: [
+      'kirti lamani'
+    ]
+  },
+  {
+    name: 'Abhi LS',
+    slug: 'abhi-ls',
+    aliases: [
+      'abhi ls'
+    ]
+  },
+  {
+    name: 'Shivakumar',
+    slug: 'shivakumar',
+    aliases: [
+      'shivakumar'
+    ]
+  },
+  {
+    name: 'Mahesh Lamani',
+    slug: 'mahesh-lamani',
+    aliases: [
+      'mahesh lamani', 'mahesh lambani'
+    ]
+  },
+  {
+    name: 'MP Mahesh',
+    slug: 'mp-mahesh',
+    aliases: [
+      'mp mahesh'
+    ]
+  },
+  {
+    name: 'MC Maruti',
+    slug: 'mc-maruti',
+    aliases: [
+      'mc maruti'
+    ]
+  },
+  {
+    name: 'Vinod Nayak',
+    slug: 'vinod-nayak',
+    aliases: [
+      'vinod nayak'
+    ]
+  },
+  {
+    name: 'Prakash Pujar',
+    slug: 'prakash-pujar',
+    aliases: [
+      'prakash pujar'
+    ]
+  },
+  {
+    name: 'Devu R Lamani',
+    slug: 'devu-r-lamani',
+    aliases: [
+      'devu r lamani'
+    ]
+  },
+  {
+    name: 'Pandu Naik',
+    slug: 'pandu-naik',
+    aliases: [
+      'pandu naik', 'pandu ps'
+    ]
+  },
+  {
+    name: 'Santosh Naik',
+    slug: 'santosh-naik',
+    aliases: [
+      'santosh naik', 'santosh naik lt hb'
+    ]
+  },
+  {
+    name: 'DJ Duda Naik',
+    slug: 'dj-duda-naik',
+    aliases: [
+      'dj duda naik', 'duda naik'
+    ]
+  },
+  {
+    name: 'Rahul Naik',
+    slug: 'rahul-naik',
+    aliases: [
+      'rahul naik', 'rahul naik d'
+    ]
+  },
+  {
+    name: 'C Prajawal',
+    slug: 'c-prajawal',
+    aliases: [
+      'c prajawal', 'prajawal'
+    ]
+  },
+  {
+    name: 'VP Venktesh',
+    slug: 'vp-venktesh',
+    aliases: [
+      'vp venktesh', 'venktesh'
+    ]
+  },
+  {
+    name: 'RK Sevaraj Rathod',
+    slug: 'rk-sevaraj-rathod',
+    aliases: [
+      'rk sevaraj rathod', 'sevaraj rathod'
+    ]
+  },
+  {
+    name: 'Somesh Chanakya',
+    slug: 'somesh-chanakya',
+    aliases: [
+      'somesh chanakya', 'chanakya'
+    ]
+  },
+  {
+    name: 'Arun Boss MJ',
+    slug: 'arun-boss-mj',
+    aliases: [
+      'arun boss mj', 'arun boss'
+    ]
+  }
+];
+
+function findCanonicalArtist(rawName) {
+  if (!rawName || typeof rawName !== 'string') return null;
+  const lower = rawName.trim().replace(/\s+/g, ' ').toLowerCase();
+  for (const artist of CANONICAL_ARTISTS_CATALOG) {
+    if (artist.name.toLowerCase() === lower || artist.slug === lower) {
+      return artist;
+    }
+    for (const alias of artist.aliases) {
+      if (alias === lower) {
+        return artist;
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -130,123 +505,9 @@ function normalizeArtistName(name) {
   let clean = cleanArtistToken(name);
   if (!clean || !isValidArtistName(clean)) return 'HLT&BS Official Music';
 
-  const lower = clean.toLowerCase();
-
-  // DJ Nagaraj variations
-  if (lower === 'dj nagaraj' || lower === 'dj nagaraja' || lower === 'nagaraja' || lower === 'nagaraj' ||
-      lower === 'dj nagaraj mix' || lower === 'dj nagaraj official' || lower === 'singer nagaraj' ||
-      lower === 'singer nagaraja' || lower === 'singer dj nagaraj' || lower === 'dj nagaraj songs' ||
-      lower === 'nagaraja dj' || lower === 'nagaraj dj' || lower === 'singing nagaraj dj' || lower === 'singing nagaraja dj') {
-    return 'DJ Nagaraj';
-  }
-
-  // Praveen Bandri variations
-  if (lower === 'praveen bandri' || lower === 'praveen bandari' || lower === 'singer praveen bandri' ||
-      lower === 'praveen bandri music' || lower === 'praveen' || lower === 'singing praveen bandri') {
-    return 'Praveen Bandri';
-  }
-
-  // Bhima BS variations
-  if (lower === 'bhima bs' || lower === 'bhima b s' || lower === 'bheem bs' || lower === 'bheema bs' ||
-      lower === 'singer bhima bs' || lower === 'lyrics bhima bs' || lower === 'bhima_bs') {
-    return 'Bhima BS';
-  }
-
-  // Sumitra variations
-  if (lower === 'sumitra' || lower === 'sumithra' || lower === 'singer sumitra' || lower === 'singer sumithra') {
-    return 'Sumitra';
-  }
-
-  // Gururaj Krg variations
-  if (lower === 'gururaj krg' || lower === 'gururaj' || lower === 'guru krg' || lower === 'gururaja krg' ||
-      lower === 'singer gururaja krg' || lower === 'guru raj krg' || lower === 'singing guru raj krg' ||
-      lower === 'singing gururaj krg' || lower === 'guru raj') {
-    return 'Gururaj Krg';
-  }
-
-  // Aishu variations
-  if (lower === 'aishu' || lower === 'singer aishu') {
-    return 'Aishu';
-  }
-
-  // Sunil BS variations
-  if (lower === 'sunil bs' || lower === 'singin sunil bs' || lower === 'singing sunil bs' || lower === 'sunil b s' || lower === 'sunil_bs') {
-    return 'Sunil BS';
-  }
-
-  // Lakshman Vakdoth variations
-  if (lower === 'lakshman vakdoth' || lower === 'laxman vakdoth' || lower === 'lakshman') {
-    return 'Lakshman Vakdoth';
-  }
-
-  // Harish HLT variations
-  if (lower === 'harish hlt' || lower === 'harish') {
-    return 'Harish HLT';
-  }
-
-  // S.M Somesh Naik variations
-  if (lower === 's.m somesh naik' || lower === 'somesh naik' || lower === 'sm somesh naik' || lower === 's.m somesh' || lower === 's.m_somesh') {
-    return 'S.M Somesh Naik';
-  }
-
-  // N Lokesh Naik variations
-  if (lower === 'n lokesh naik' || lower === 'lokesh naik' || lower === 'n lokesh') {
-    return 'N Lokesh Naik';
-  }
-
-  // MJPS variations
-  if (lower === 'mjps') {
-    return 'MJPS';
-  }
-
-  // Janu Lambani variations
-  if (lower === 'janu lambani') {
-    return 'Janu Lambani';
-  }
-
-  // B N Prashantha variations
-  if (lower === 'b n prashantha' || lower === 'bn prashantha' || lower === 'prashantha') {
-    return 'B N Prashantha';
-  }
-
-  // Renu Rathod variations
-  if (lower === 'renu rathod') {
-    return 'Renu Rathod';
-  }
-
-  // Hundar Krishna variations
-  if (lower === 'hundar krishna') {
-    return 'Hundar Krishna';
-  }
-
-  // CHS Banjar variations
-  if (lower === 'chs banjar') {
-    return 'CHS Banjar';
-  }
-
-  // Chetu CH variations
-  if (lower === 'chetu ch') {
-    return 'Chetu CH';
-  }
-
-  // Tukaram PS variations
-  if (lower === 'tukaram ps') {
-    return 'Tukaram PS';
-  }
-
-  // Kalpana Pawar variations
-  if (lower === 'kalpana pawar' || lower === 'kalpana') {
-    return 'Kalpana Pawar';
-  }
-
-  // Vishwanath variations
-  if (lower === 'vishwanath') {
-    return 'Vishwanath';
-  }
-
-  // Ashwini variations
-  if (lower === 'ashwini') {
-    return 'Ashwini';
+  const matched = findCanonicalArtist(clean);
+  if (matched) {
+    return matched.name;
   }
 
   // Auto Title-Case formatting for any other artist
@@ -257,7 +518,7 @@ function normalizeArtistName(name) {
 }
 
 /**
- * Helper: Splits compound/multi-artist strings (e.g., "Bhima BS & Sumitra", "Aishu and Nagaraj") into individual artist names.
+ * Helper: Splits compound/multi-artist strings into individual artist names.
  */
 function splitArtists(rawString) {
   if (!rawString || typeof rawString !== 'string') return [];
@@ -269,9 +530,31 @@ function splitArtists(rawString) {
     part = part.replaceAll('HLT_AND_BS', 'HLT&BS');
     const cleaned = cleanArtistToken(part);
     if (isValidArtistName(cleaned)) {
-      const norm = normalizeArtistName(cleaned);
-      if (norm && norm !== 'HLT&BS Official Music' && !result.includes(norm)) {
-        result.push(norm);
+      // Check if this part contains multiple known canonical artists
+      const foundInside = [];
+      for (const artist of CANONICAL_ARTISTS_CATALOG) {
+        for (const alias of artist.aliases) {
+          const regex = new RegExp(`(^|[^A-Za-z0-9])${alias.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}($|[^A-Za-z0-9])`, 'i');
+          if (regex.test(cleaned)) {
+            if (!foundInside.includes(artist.name)) {
+              foundInside.push(artist.name);
+            }
+            break;
+          }
+        }
+      }
+
+      if (foundInside.length > 0) {
+        for (const a of foundInside) {
+          if (!result.includes(a)) {
+            result.push(a);
+          }
+        }
+      } else {
+        const norm = normalizeArtistName(cleaned);
+        if (norm && norm !== 'HLT&BS Official Music' && !result.includes(norm)) {
+          result.push(norm);
+        }
       }
     }
   }
@@ -283,6 +566,12 @@ function splitArtists(rawString) {
  * e.g. "DJ Nagaraj", "dj nagaraj", "DJ NAGARAJ" -> "dj-nagaraj"
  */
 function getArtistSlug(artistName) {
+  if (!artistName || typeof artistName !== 'string') return 'various-artists';
+  const clean = cleanArtistToken(artistName);
+  const matched = findCanonicalArtist(clean || artistName);
+  if (matched) {
+    return matched.slug;
+  }
   const norm = normalizeArtistName(artistName);
   return norm.toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -319,33 +608,21 @@ function extractArtistsFromSong(title, explicitArtist, channelTitle) {
     }
   }
 
-  // 2. Extract from song title
+  // 2. Scan title for known canonical artists
   if (title && typeof title === 'string') {
     const upper = title.toUpperCase();
 
-    if (upper.includes('NAGARAJ') || upper.includes('NAGARAJA')) artists.add('DJ Nagaraj');
-    if (upper.includes('PRAVEEN BANDRI') || upper.includes('PRAVEEN BANDARI')) artists.add('Praveen Bandri');
-    if (upper.includes('BHIMA BS') || upper.includes('BHIMA B S') || upper.includes('BHEEMA BS') || upper.includes('BHIMA_BS')) artists.add('Bhima BS');
-    if (upper.includes('SUMITRA') || upper.includes('SUMITHRA')) artists.add('Sumitra');
-    if (upper.includes('GURURAJ KRG') || upper.includes('GURURAJA KRG') || upper.includes('GURU RAJ KRG') || upper.includes('GURURAJ')) artists.add('Gururaj Krg');
-    if (upper.includes('AISHU')) artists.add('Aishu');
-    if (upper.includes('SUNIL BS') || upper.includes('SUNIL B S') || upper.includes('SUNIL_BS')) artists.add('Sunil BS');
-    if (upper.includes('LAKSHMAN VAKDOTH') || upper.includes('LAXMAN VAKDOTH')) artists.add('Lakshman Vakdoth');
-    if (upper.includes('HARISH HLT')) artists.add('Harish HLT');
-    if (upper.includes('SOMESH NAIK') || upper.includes('S.M SOMESH') || upper.includes('S.M_SOMESH')) artists.add('S.M Somesh Naik');
-    if (upper.includes('LOKESH NAIK') || upper.includes('N LOKESH')) artists.add('N Lokesh Naik');
-    if (upper.includes('MJPS')) artists.add('MJPS');
-    if (upper.includes('JANU LAMBANI')) artists.add('Janu Lambani');
-    if (upper.includes('PRASHANTHA') || upper.includes('B N PRASHANTHA')) artists.add('B N Prashantha');
-    if (upper.includes('RENU RATHOD')) artists.add('Renu Rathod');
-    if (upper.includes('HUNDAR KRISHNA')) artists.add('Hundar Krishna');
-    if (upper.includes('CHS BANJAR')) artists.add('CHS Banjar');
-    if (upper.includes('CHETU CH')) artists.add('Chetu CH');
-    if (upper.includes('TUKARAM PS')) artists.add('Tukaram PS');
-    if (upper.includes('KALPANA PAWAR') || upper.includes('KALPANA')) artists.add('Kalpana Pawar');
-    if (upper.includes('VISHWANATH')) artists.add('Vishwanath');
-    if (upper.includes('ASHWINI')) artists.add('Ashwini');
+    for (const artist of CANONICAL_ARTISTS_CATALOG) {
+      for (const alias of artist.aliases) {
+        const regex = new RegExp(`(^|[^A-Za-z0-9])${alias.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}($|[^A-Za-z0-9])`, 'i');
+        if (regex.test(upper)) {
+          artists.add(artist.name);
+          break;
+        }
+      }
+    }
 
+    // 3. Scan for candidate artist names matching credit markers
     const matches = title.matchAll(/(?:SINGER[S]?|SINGING|SINGIN|SINGAR|FEAT\.?|FT\.?|VOCALS?|LYRICS?|MUSIC|BY)\s+([A-Za-z0-9\s&,+\/]+?)(?:\s+(?:DJ|MIX|FULL|OFFICIAL|#|\|\||-|MUSIC|LYRICS|SINGING|SINGER)|$)/gi);
     for (const match of matches) {
       if (match[1]) {
@@ -637,10 +914,15 @@ function extractYoutubeIdFromKey(key) {
 }
 
 /**
- * Health Check Endpoint
+ * Health Check Endpoint for external uptime monitors (UptimeRobot) & Render keep-alive
+ * Responds immediately with HTTP 200 without DB/R2/YouTube overhead.
  */
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', bucket: bucketName, serverTime: new Date().toISOString() });
+app.get(['/health', '/api/health'], (req, res) => {
+  return res.status(200).json({
+    status: 'ok',
+    service: 'youtube-music-backend',
+    serverTime: new Date().toISOString(),
+  });
 });
 
 /**
@@ -696,7 +978,7 @@ app.get(['/api/artists', '/admin/artists'], async (req, res) => {
 
       for (const artistName of artistNames) {
         const artistId = getArtistSlug(artistName);
-        if (artistId === 'hlt' || artistId === 'bs' || artistId === 'hlt-bs') continue;
+        if (artistId === 'hlt' || artistId === 'bs' || artistId === 'hlt-bs' || artistId === 'hlt-bs-official-music') continue;
 
         if (!artistGroupMap[artistId]) {
           const metadata = findArtistMetadata(artistsMetadata, artistId);
@@ -723,7 +1005,7 @@ app.get(['/api/artists', '/admin/artists'], async (req, res) => {
 
     // Also include and merge artists directly from artistsMetadata (config/artists.json in R2)
     for (const [slug, meta] of Object.entries(artistsMetadata || {})) {
-      if (slug === 'hlt' || slug === 'bs' || slug === 'hlt-bs') continue;
+      if (slug === 'hlt' || slug === 'bs' || slug === 'hlt-bs' || slug === 'hlt-bs-official-music') continue;
       const canonicalSlug = getArtistSlug(slug);
       const hasCustomImage = Boolean(meta.hasCustomImage === true && meta.profileImageUrl && !meta.profileImageUrl.includes('default'));
       const profileImageUrl = hasCustomImage ? (meta.profileImageUrl || `${publicDomain}/artists/${canonicalSlug}/profile.jpg`) : '';
