@@ -1476,7 +1476,7 @@ app.post('/admin/artist/profile', requireAdminAuth, async (req, res) => {
  * Dynamically scans Cloudflare R2 live bucket contents to return actual upload statuses.
  * Cloudflare R2 is the SINGLE SOURCE OF TRUTH.
  */
-app.get('/admin/songs/status', requireAdminAuth, async (req, res) => {
+app.get('/admin/songs/status', async (req, res) => {
   try {
     const r2Objects = await fetchAllR2Objects();
     const songsMap = {};
