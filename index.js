@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import multer from 'multer';
@@ -22,6 +23,45 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 } // 100 MB max limit
 });
 
+// Secure in-memory session store with TTL (24 hours)
+const activeAdminSessions = new Map();
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Periodic cleanup of expired sessions every 30 minutes
+const cleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [token, session] of activeAdminSessions.entries()) {
+    if (!session || now > session.expiresAt) {
+      activeAdminSessions.delete(token);
+    }
+  }
+}, 30 * 60 * 1000);
+if (cleanupInterval.unref) cleanupInterval.unref();
+
+const requireAdminAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, error: 'Authentication required' });
+  }
+  const token = authHeader.split(' ')[1];
+  if (!token) {
+    return res.status(401).json({ success: false, error: 'Authentication required' });
+  }
+
+  const session = activeAdminSessions.get(token);
+  if (!session) {
+    return res.status(401).json({ success: false, error: 'Invalid or expired authentication token' });
+  }
+
+  if (Date.now() > session.expiresAt) {
+    activeAdminSessions.delete(token);
+    return res.status(401).json({ success: false, error: 'Session expired. Please log in again.' });
+  }
+
+  req.adminUser = session.username;
+  next();
+};
+
 const accountId = process.env.R2_ACCOUNT_ID;
 const accessKeyId = process.env.R2_ACCESS_KEY_ID;
 const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
@@ -44,7 +84,9 @@ const s3Client = new S3Client({
 
 const profileR2Key = 'config/artist-profile.json';
 const artistsMetadataR2Key = 'config/artists.json';
+const bannersMetadataR2Key = 'config/banners.json';
 const localArtistsFilePath = path.join(__dirname, 'data', 'artists.json');
+const localBannersFilePath = path.join(__dirname, 'data', 'banners.json');
 const localSongsDbPath = path.join(__dirname, 'data', 'songs_db.json');
 
 const defaultArtistProfile = {
@@ -721,29 +763,110 @@ async function fetchArtistsMetadataFromR2() {
 /**
  * Helper: Asynchronously uploads/overwrites config/artists.json in Cloudflare R2 bucket.
  */
+let artistsMetadataWriteLock = Promise.resolve();
 async function saveArtistsMetadataToR2(artistsMap) {
-  const jsonString = JSON.stringify(artistsMap, null, 2);
-  try {
-    const command = new PutObjectCommand({
-      Bucket: bucketName,
-      Key: artistsMetadataR2Key,
-      Body: Buffer.from(jsonString, 'utf-8'),
-      ContentType: 'application/json',
-    });
-    await s3Client.send(command);
-    console.log(`[R2_ARTISTS_SAVED] Persisted config/artists.json to Cloudflare R2 bucket "${bucketName}"`);
-  } catch (err) {
-    console.error('[R2_ARTISTS_SAVE_ERROR] Failed persisting artists to R2:', err);
-  }
-
-  // Backup to local file
-  try {
-    const dataDir = path.dirname(localArtistsFilePath);
-    if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
+  artistsMetadataWriteLock = artistsMetadataWriteLock.then(async () => {
+    const jsonString = JSON.stringify(artistsMap, null, 2);
+    try {
+      const command = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: artistsMetadataR2Key,
+        Body: Buffer.from(jsonString, 'utf-8'),
+        ContentType: 'application/json',
+      });
+      await s3Client.send(command);
+      console.log(`[R2_ARTISTS_SAVED] Persisted config/artists.json to Cloudflare R2 bucket "${bucketName}"`);
+      
+      const verifyCmd = new GetObjectCommand({ Bucket: bucketName, Key: artistsMetadataR2Key });
+      const verifyRes = await s3Client.send(verifyCmd);
+      const bodyText = await verifyRes.Body.transformToString('utf-8');
+      JSON.parse(bodyText);
+    } catch (err) {
+      console.error('[R2_ARTISTS_SAVE_ERROR] Failed persisting or verifying artists to R2:', err);
     }
-    fs.writeFileSync(localArtistsFilePath, jsonString, 'utf-8');
-  } catch (_) {}
+
+    try {
+      const dataDir = path.dirname(localArtistsFilePath);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      const tmpPath = localArtistsFilePath + '.tmp';
+      fs.writeFileSync(tmpPath, jsonString, 'utf-8');
+      fs.renameSync(tmpPath, localArtistsFilePath);
+    } catch (_) {}
+  }).catch(() => {});
+  return artistsMetadataWriteLock;
+}
+
+/**
+ * Helper: Asynchronously reads config/banners.json from Cloudflare R2 bucket with local fallback.
+ * R2 is the PRIMARY persistent source.
+ * Local fallback is strictly for read fallback if R2 is temporarily unreachable.
+ */
+async function fetchBannersFromR2() {
+  try {
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: bannersMetadataR2Key,
+    });
+    const response = await s3Client.send(command);
+    const bodyText = await response.Body.transformToString('utf-8');
+    const parsed = JSON.parse(bodyText);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    return [];
+  } catch (err) {
+    if (err.name !== 'NoSuchKey' && err.$metadata?.httpStatusCode !== 404) {
+      console.warn('[R2_BANNERS_READ_WARN] Could not fetch banners from R2:', err.message || err);
+    }
+    if (fs.existsSync(localBannersFilePath)) {
+      try {
+        const localData = JSON.parse(fs.readFileSync(localBannersFilePath, 'utf-8'));
+        if (Array.isArray(localData)) return localData;
+      } catch (_) {}
+    }
+    return [];
+  }
+}
+
+/**
+ * Helper: Asynchronously uploads/overwrites config/banners.json in Cloudflare R2 bucket.
+ * Uses mutex lock to serialize writes.
+ */
+let bannersMetadataWriteLock = Promise.resolve();
+async function saveBannersToR2(bannersList) {
+  bannersMetadataWriteLock = bannersMetadataWriteLock.then(async () => {
+    const jsonString = JSON.stringify(bannersList, null, 2);
+    try {
+      const command = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: bannersMetadataR2Key,
+        Body: Buffer.from(jsonString, 'utf-8'),
+        ContentType: 'application/json',
+      });
+      await s3Client.send(command);
+      console.log(`[R2_BANNERS_SAVED] Persisted config/banners.json to Cloudflare R2 bucket "${bucketName}"`);
+
+      const verifyCmd = new GetObjectCommand({ Bucket: bucketName, Key: bannersMetadataR2Key });
+      const verifyRes = await s3Client.send(verifyCmd);
+      const bodyText = await verifyRes.Body.transformToString('utf-8');
+      JSON.parse(bodyText);
+    } catch (err) {
+      console.error('[R2_BANNERS_SAVE_ERROR] Failed persisting or verifying banners to R2:', err);
+    }
+
+    try {
+      const dataDir = path.dirname(localBannersFilePath);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      const tmpPath = localBannersFilePath + '.tmp';
+      fs.writeFileSync(tmpPath, jsonString, 'utf-8');
+      fs.renameSync(tmpPath, localBannersFilePath);
+    } catch (_) {}
+  }).catch(() => {});
+  return bannersMetadataWriteLock;
 }
 
 /**
@@ -767,7 +890,9 @@ function saveLocalSongsDb(db) {
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
     }
-    fs.writeFileSync(localSongsDbPath, JSON.stringify(db, null, 2), 'utf-8');
+    const tmpPath = localSongsDbPath + '.tmp';
+    fs.writeFileSync(tmpPath, JSON.stringify(db, null, 2), 'utf-8');
+    fs.renameSync(tmpPath, localSongsDbPath);
   } catch (_) {}
 }
 
@@ -781,7 +906,7 @@ async function getAllKnownSongs() {
 
   for (const obj of r2Objects) {
     if (!obj.Key) continue;
-    if (obj.Key.startsWith('config/') || obj.Key.startsWith('artists/')) continue;
+    if (obj.Key.startsWith('config/') || obj.Key.startsWith('artists/') || obj.Key.startsWith('banners/')) continue;
 
     const youtubeVideoId = extractYoutubeIdFromKey(obj.Key);
     if (!youtubeVideoId) continue;
@@ -929,22 +1054,76 @@ app.get(['/health', '/api/health'], (req, res) => {
  * POST /admin/login
  * Secure authentication against server environment variables (ADMIN_USERNAME & ADMIN_PASSWORD)
  */
+const loginRateLimiter = new Map();
+
 app.post('/admin/login', (req, res) => {
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  const limitWindow = 15 * 60 * 1000;
+
+  let limiter = loginRateLimiter.get(ip);
+  if (!limiter) {
+    limiter = { count: 0, firstAttempt: now };
+    loginRateLimiter.set(ip, limiter);
+  }
+
+  if (now - limiter.firstAttempt > limitWindow) {
+    limiter.count = 0;
+    limiter.firstAttempt = now;
+  }
+
+  if (limiter.count >= 5) {
+    return res.status(429).json({ success: false, error: 'Too Many Requests' });
+  }
+
   const { username, password } = req.body;
-  const adminUser = process.env.ADMIN_USERNAME || 'admin';
-  const adminPass = process.env.ADMIN_PASSWORD || 'bheema@bs7686';
+
+  // Resolve effective credentials, guaranteeing that deprecated credentials are never accepted
+  let adminUser = process.env.ADMIN_USERNAME || 'hltbs_official_music@2006';
+  let adminPass = process.env.ADMIN_PASSWORD || '@BSDP20022006';
+
+  // Explicit safety safeguard: Invalidate legacy credentials if still present in production environment
+  if (adminUser.toLowerCase() === 'admin') {
+    adminUser = 'hltbs_official_music@2006';
+  }
+  if (adminPass === 'bheema@bs7686') {
+    adminPass = '@BSDP20022006';
+  }
 
   const trimmedUser = (username || '').trim();
   const trimmedPass = (password || '').trim();
 
+  // Strict check: Only exact match with new credentials passes
   if (trimmedUser.toLowerCase() === adminUser.toLowerCase() && trimmedPass === adminPass) {
-    const token = Buffer.from(`${trimmedUser}:${Date.now()}`).toString('base64');
+    limiter.count = 0;
+    const token = crypto.randomBytes(32).toString('hex');
+    activeAdminSessions.set(token, {
+      username: trimmedUser,
+      createdAt: now,
+      expiresAt: now + SESSION_TTL_MS,
+    });
     console.log(`[ADMIN_AUTH] Successful login for user: ${trimmedUser}`);
     return res.json({ success: true, username: trimmedUser, token });
   }
 
+  limiter.count++;
   console.warn(`[ADMIN_AUTH] Failed login attempt for user: ${trimmedUser}`);
   return res.status(401).json({ success: false, error: 'Invalid username or password. Please try again.' });
+});
+
+/**
+ * POST /admin/logout
+ * Securely invalidates active admin session token.
+ */
+app.post('/admin/logout', requireAdminAuth, (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.split(' ')[1];
+    if (token) {
+      activeAdminSessions.delete(token);
+    }
+  }
+  return res.json({ success: true, message: 'Logged out successfully' });
 });
 
 /**
@@ -1129,7 +1308,7 @@ app.post([
   '/api/artists/:artistId/profile',
   '/admin/artists/:artistId',
   '/api/artists/:artistId',
-], async (req, res) => {
+], requireAdminAuth, async (req, res) => {
   try {
     const { artistId } = req.params;
     const { artistName, contactNumber, instagramUrl, youtubeUrl, bio } = req.body;
@@ -1178,7 +1357,7 @@ app.post([
   '/api/artists/:artistId/profile-image',
   '/admin/artists/:artistId/image',
   '/api/artists/:artistId/image',
-], (req, res, next) => {
+], requireAdminAuth, (req, res, next) => {
   upload.any()(req, res, (err) => {
     if (err) return res.status(400).json({ success: false, error: `Multer file parsing error: ${err.message}` });
     req.file = req.files?.[0] || req.file;
@@ -1265,7 +1444,7 @@ app.post([
  * POST /admin/artist/profile
  * Converts profile to JSON and uploads/overwrites config/artist-profile.json in Cloudflare R2.
  */
-app.post('/admin/artist/profile', async (req, res) => {
+app.post('/admin/artist/profile', requireAdminAuth, async (req, res) => {
   try {
     const current = await fetchArtistProfileFromR2();
     const { contactNumber, instagramUrl, youtubeUrl } = req.body;
@@ -1297,13 +1476,14 @@ app.post('/admin/artist/profile', async (req, res) => {
  * Dynamically scans Cloudflare R2 live bucket contents to return actual upload statuses.
  * Cloudflare R2 is the SINGLE SOURCE OF TRUTH.
  */
-app.get('/admin/songs/status', async (req, res) => {
+app.get('/admin/songs/status', requireAdminAuth, async (req, res) => {
   try {
     const r2Objects = await fetchAllR2Objects();
     const songsMap = {};
 
     for (const obj of r2Objects) {
       if (!obj.Key) continue;
+      if (obj.Key.startsWith('config/') || obj.Key.startsWith('artists/') || obj.Key.startsWith('banners/')) continue;
       const youtubeVideoId = extractYoutubeIdFromKey(obj.Key);
       if (!youtubeVideoId) continue;
 
@@ -1353,7 +1533,7 @@ app.get('/admin/songs/status', async (req, res) => {
  * GET /admin/r2/files
  * Lists real object keys directly from Cloudflare R2 bucket
  */
-app.get('/admin/r2/files', async (req, res) => {
+app.get('/admin/r2/files', requireAdminAuth, async (req, res) => {
   try {
     const r2Objects = await fetchAllR2Objects();
     const files = r2Objects.map(obj => ({
@@ -1374,7 +1554,7 @@ app.get('/admin/r2/files', async (req, res) => {
  * REAL Cloudflare R2 Multipart File Upload with DUPLICATE UPLOAD PROTECTION
  * Uses NEW naming convention: music/<youtubeVideoId>__<safeSongTitle>.<ext> for new uploads
  */
-app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
+app.post('/admin/upload-song', requireAdminAuth, upload.single('audioFile'), async (req, res) => {
   try {
     const file = req.file;
     const { youtubeVideoId, songTitle, artist, duration } = req.body;
@@ -1511,7 +1691,7 @@ app.post('/admin/upload-song', upload.single('audioFile'), async (req, res) => {
  * Safely deletes an audio file from Cloudflare R2 and removes its metadata from the song catalog database.
  * Strict Error Safety: If R2 deletion fails, the local catalog record is NOT removed.
  */
-app.delete('/admin/songs/:id', async (req, res) => {
+app.delete('/admin/songs/:id', requireAdminAuth, async (req, res) => {
   try {
     const { id } = req.params;
     if (!id) {
@@ -1571,6 +1751,182 @@ app.delete('/admin/songs/:id', async (req, res) => {
       error: 'Unable to delete the file from storage. Song was not removed.',
       details: err.message || err.toString(),
     });
+  }
+});
+
+// ==========================================
+// PROMOTIONAL BANNER ENDPOINTS
+// ==========================================
+
+/**
+ * GET /api/banners
+ * Public endpoint: returns all active promotional banners.
+ * Sorted newest first.
+ */
+app.get('/api/banners', async (req, res) => {
+  try {
+    const banners = await fetchBannersFromR2();
+    const activeBanners = banners
+      .filter(b => b.isActive !== false)
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    return res.json({ success: true, banners: activeBanners });
+  } catch (err) {
+    console.error('[API_BANNERS_ERROR] Error fetching banners:', err);
+    return res.json({ success: true, banners: [] });
+  }
+});
+
+/**
+ * GET /admin/banners
+ * Admin endpoint: returns all promotional banners (active and inactive).
+ */
+app.get('/admin/banners', requireAdminAuth, async (req, res) => {
+  try {
+    const banners = await fetchBannersFromR2();
+    banners.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    return res.json({ success: true, banners });
+  } catch (err) {
+    console.error('[ADMIN_BANNERS_ERROR] Error fetching admin banners:', err);
+    return res.status(500).json({ success: false, error: 'Failed to fetch banners' });
+  }
+});
+
+/**
+ * POST /admin/banners
+ * Admin endpoint: creates a new promotional banner.
+ * Uploads banner image to banners/ prefix in Cloudflare R2.
+ * Metadata stored persistently in config/banners.json.
+ */
+app.post('/admin/banners', requireAdminAuth, upload.single('bannerImage'), async (req, res) => {
+  try {
+    const title = (req.body?.title || '').trim();
+    const description = (req.body?.description || '').trim();
+    const actionType = req.body?.actionType || 'none';
+    const songId = (req.body?.songId || '').trim() || null;
+    const actionUrl = (req.body?.actionUrl || '').trim() || null;
+    const isActive = req.body?.isActive === undefined || req.body?.isActive === 'true' || req.body?.isActive === true;
+
+    if (!title) {
+      return res.status(400).json({ success: false, error: 'Banner title is required.' });
+    }
+
+    let imageUrl = (req.body?.imageUrl || '').trim();
+    let r2Key = null;
+
+    if (req.file) {
+      const bannerUid = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      const lowerName = req.file.originalname.toLowerCase();
+      let ext = '.jpg';
+      if (lowerName.endsWith('.png')) ext = '.png';
+      if (lowerName.endsWith('.webp')) ext = '.webp';
+      if (lowerName.endsWith('.jpeg')) ext = '.jpeg';
+
+      r2Key = `banners/banner_${bannerUid}${ext}`;
+      let contentType = req.file.mimetype || 'image/jpeg';
+
+      const putCmd = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: r2Key,
+        Body: req.file.buffer,
+        ContentType: contentType,
+      });
+      await s3Client.send(putCmd);
+      imageUrl = `${publicDomain}/${encodeURIComponent(r2Key).replaceAll('%2F', '/')}`;
+      console.log(`[R2_BANNER_UPLOAD] Banner image uploaded to ${r2Key}`);
+    }
+
+    if (!imageUrl) {
+      return res.status(400).json({ success: false, error: 'Banner image is required.' });
+    }
+
+    const bannerId = `banner_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const newBanner = {
+      id: bannerId,
+      title,
+      description,
+      imageUrl,
+      r2Key,
+      actionType,
+      songId,
+      actionUrl,
+      isActive,
+      createdAt: new Date().toISOString(),
+    };
+
+    const banners = await fetchBannersFromR2();
+    banners.unshift(newBanner);
+    await saveBannersToR2(banners);
+
+    return res.json({ success: true, banner: newBanner });
+  } catch (err) {
+    console.error('[ADMIN_CREATE_BANNER_ERROR] Error creating banner:', err);
+    return res.status(500).json({ success: false, error: `Failed to create banner: ${err.message || err}` });
+  }
+});
+
+/**
+ * PATCH /admin/banners/:id/status
+ * Admin endpoint: toggles or sets active state of a banner.
+ */
+app.patch('/admin/banners/:id/status', requireAdminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const banners = await fetchBannersFromR2();
+    const bannerIndex = banners.findIndex(b => b.id === id);
+    if (bannerIndex === -1) {
+      return res.status(404).json({ success: false, error: 'Banner not found' });
+    }
+
+    const current = banners[bannerIndex];
+    const updatedIsActive = req.body?.isActive !== undefined
+      ? (req.body.isActive === true || req.body.isActive === 'true')
+      : !current.isActive;
+
+    banners[bannerIndex] = { ...current, isActive: updatedIsActive };
+    await saveBannersToR2(banners);
+
+    return res.json({ success: true, banner: banners[bannerIndex] });
+  } catch (err) {
+    console.error('[ADMIN_BANNER_STATUS_ERROR] Error updating banner status:', err);
+    return res.status(500).json({ success: false, error: 'Failed to update banner status' });
+  }
+});
+
+/**
+ * DELETE /admin/banners/:id
+ * Strictly scoped: ONLY deletes image files starting with 'banners/'.
+ * NEVER touches 'music/*', audio files, or artist images.
+ */
+app.delete('/admin/banners/:id', requireAdminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const banners = await fetchBannersFromR2();
+    const banner = banners.find(b => b.id === id);
+    if (!banner) {
+      return res.status(404).json({ success: false, error: 'Banner not found' });
+    }
+
+    // STRICT ISOLATION GUARD: ONLY delete if key starts with 'banners/'
+    if (banner.r2Key && typeof banner.r2Key === 'string' && banner.r2Key.startsWith('banners/')) {
+      try {
+        const delCmd = new DeleteObjectCommand({
+          Bucket: bucketName,
+          Key: banner.r2Key,
+        });
+        await s3Client.send(delCmd);
+        console.log(`[R2_BANNER_DELETED] Deleted banner image ${banner.r2Key} from bucket ${bucketName}`);
+      } catch (delErr) {
+        console.warn('[R2_BANNER_DELETE_WARN] Could not delete banner image from R2:', delErr.message);
+      }
+    }
+
+    const remaining = banners.filter(b => b.id !== id);
+    await saveBannersToR2(remaining);
+
+    return res.json({ success: true, message: 'Banner deleted successfully' });
+  } catch (err) {
+    console.error('[ADMIN_BANNER_DELETE_ERROR] Error deleting banner:', err);
+    return res.status(500).json({ success: false, error: 'Failed to delete banner' });
   }
 });
 
