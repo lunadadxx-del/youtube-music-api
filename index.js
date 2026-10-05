@@ -85,8 +85,10 @@ const s3Client = new S3Client({
 const profileR2Key = 'config/artist-profile.json';
 const artistsMetadataR2Key = 'config/artists.json';
 const bannersMetadataR2Key = 'config/banners.json';
+const adminSongsMetadataR2Key = 'config/admin_songs.json';
 const localArtistsFilePath = path.join(__dirname, 'data', 'artists.json');
 const localBannersFilePath = path.join(__dirname, 'data', 'banners.json');
+const localAdminSongsFilePath = path.join(__dirname, 'data', 'admin_songs.json');
 const localSongsDbPath = path.join(__dirname, 'data', 'songs_db.json');
 
 const defaultArtistProfile = {
@@ -906,7 +908,7 @@ async function getAllKnownSongs() {
 
   for (const obj of r2Objects) {
     if (!obj.Key) continue;
-    if (obj.Key.startsWith('config/') || obj.Key.startsWith('artists/') || obj.Key.startsWith('banners/')) continue;
+    if (obj.Key.startsWith('config/') || obj.Key.startsWith('artists/') || obj.Key.startsWith('banners/') || obj.Key.startsWith('admin_music/') || obj.Key.startsWith('admin_thumbnails/')) continue;
 
     const youtubeVideoId = extractYoutubeIdFromKey(obj.Key);
     if (!youtubeVideoId) continue;
@@ -1483,7 +1485,7 @@ app.get('/admin/songs/status', async (req, res) => {
 
     for (const obj of r2Objects) {
       if (!obj.Key) continue;
-      if (obj.Key.startsWith('config/') || obj.Key.startsWith('artists/') || obj.Key.startsWith('banners/')) continue;
+      if (obj.Key.startsWith('config/') || obj.Key.startsWith('artists/') || obj.Key.startsWith('banners/') || obj.Key.startsWith('admin_music/') || obj.Key.startsWith('admin_thumbnails/')) continue;
       const youtubeVideoId = extractYoutubeIdFromKey(obj.Key);
       if (!youtubeVideoId) continue;
 
@@ -1927,6 +1929,360 @@ app.delete('/admin/banners/:id', requireAdminAuth, async (req, res) => {
   } catch (err) {
     console.error('[ADMIN_BANNER_DELETE_ERROR] Error deleting banner:', err);
     return res.status(500).json({ success: false, error: 'Failed to delete banner' });
+  }
+});
+
+// ==========================================
+// STANDALONE ADMIN SONGS HELPERS & ENDPOINTS
+// ==========================================
+
+/**
+ * Helper: Asynchronously reads config/admin_songs.json from Cloudflare R2 bucket with local fallback.
+ * R2 is the PRIMARY persistent source for standalone admin songs.
+ */
+async function fetchAdminSongsFromR2() {
+  try {
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: adminSongsMetadataR2Key,
+    });
+    const response = await s3Client.send(command);
+    const bodyText = await response.Body.transformToString('utf-8');
+    const parsed = JSON.parse(bodyText);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    return [];
+  } catch (err) {
+    if (err.name !== 'NoSuchKey' && err.$metadata?.httpStatusCode !== 404) {
+      console.warn('[R2_ADMIN_SONGS_READ_WARN] Could not fetch admin songs from R2:', err.message || err);
+    }
+    if (fs.existsSync(localAdminSongsFilePath)) {
+      try {
+        const localData = JSON.parse(fs.readFileSync(localAdminSongsFilePath, 'utf-8'));
+        if (Array.isArray(localData)) return localData;
+      } catch (_) {}
+    }
+    return [];
+  }
+}
+
+/**
+ * Helper: Asynchronously uploads/overwrites config/admin_songs.json in Cloudflare R2 bucket.
+ * Uses mutex lock to serialize writes.
+ */
+let adminSongsMetadataWriteLock = Promise.resolve();
+async function saveAdminSongsToR2(songsList) {
+  adminSongsMetadataWriteLock = adminSongsMetadataWriteLock.then(async () => {
+    const jsonString = JSON.stringify(songsList, null, 2);
+    try {
+      const command = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: adminSongsMetadataR2Key,
+        Body: Buffer.from(jsonString, 'utf-8'),
+        ContentType: 'application/json',
+      });
+      await s3Client.send(command);
+      console.log(`[R2_ADMIN_SONGS_SAVED] Persisted config/admin_songs.json to Cloudflare R2 bucket "${bucketName}"`);
+
+      const verifyCmd = new GetObjectCommand({ Bucket: bucketName, Key: adminSongsMetadataR2Key });
+      const verifyRes = await s3Client.send(verifyCmd);
+      const bodyText = await verifyRes.Body.transformToString('utf-8');
+      JSON.parse(bodyText);
+    } catch (err) {
+      console.error('[R2_ADMIN_SONGS_SAVE_ERROR] Failed persisting or verifying admin songs to R2:', err);
+    }
+
+    try {
+      const dataDir = path.dirname(localAdminSongsFilePath);
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      fs.writeFileSync(localAdminSongsFilePath, jsonString, 'utf-8');
+    } catch (fileErr) {
+      console.warn('[LOCAL_ADMIN_SONGS_WARN] Could not write local cache of admin songs:', fileErr.message);
+    }
+  });
+  return adminSongsMetadataWriteLock;
+}
+
+/**
+ * Helper: Parses image dimensions from buffer (PNG, JPEG, WEBP) without external dependencies.
+ */
+function getImageDimensions(buffer) {
+  if (!buffer || buffer.length < 24) return null;
+  // PNG: signature 89 50 4E 47 0D 0A 1A 0A
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) {
+    const width = buffer.readUInt32BE(16);
+    const height = buffer.readUInt32BE(20);
+    return { width, height };
+  }
+  // JPEG: starts with FF D8
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
+    let offset = 2;
+    while (offset < buffer.length) {
+      if (buffer[offset] !== 0xFF) break;
+      const marker = buffer[offset + 1];
+      if (marker === 0xC0 || marker === 0xC1 || marker === 0xC2) {
+        const height = buffer.readUInt16BE(offset + 5);
+        const width = buffer.readUInt16BE(offset + 7);
+        return { width, height };
+      }
+      const length = buffer.readUInt16BE(offset + 2);
+      offset += 2 + length;
+    }
+  }
+  // WEBP: RIFF....WEBP
+  if (buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+    const chunkHeader = buffer.toString('ascii', 12, 16);
+    if (chunkHeader === 'VP8 ') {
+      const width = (buffer.readUInt16LE(26) & 0x3FFF);
+      const height = (buffer.readUInt16LE(28) & 0x3FFF);
+      return { width, height };
+    }
+    if (chunkHeader === 'VP8L') {
+      const b0 = buffer[21];
+      const b1 = buffer[22];
+      const b2 = buffer[23];
+      const b3 = buffer[24];
+      const width = 1 + (((b1 & 0x3F) << 8) | b0);
+      const height = 1 + (((b3 & 0xF) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6));
+      return { width, height };
+    }
+    if (chunkHeader === 'VP8X') {
+      const width = 1 + buffer.readUIntLE(24, 3);
+      const height = 1 + buffer.readUIntLE(27, 3);
+      return { width, height };
+    }
+  }
+  return null;
+}
+
+/**
+ * GET /api/standalone-songs
+ * Public endpoint: returns all standalone admin songs.
+ * Sorted newest first.
+ */
+app.get('/api/standalone-songs', async (req, res) => {
+  try {
+    const songs = await fetchAdminSongsFromR2();
+    songs.sort((a, b) => new Date(b.publishedAt || b.createdAt || 0) - new Date(a.publishedAt || a.createdAt || 0));
+    return res.json({ success: true, count: songs.length, songs });
+  } catch (err) {
+    console.error('[API_STANDALONE_SONGS_ERROR] Error fetching standalone songs:', err);
+    return res.json({ success: true, count: 0, songs: [] });
+  }
+});
+
+/**
+ * GET /admin/standalone-songs
+ * Admin endpoint: returns all standalone admin songs.
+ */
+app.get('/admin/standalone-songs', requireAdminAuth, async (req, res) => {
+  try {
+    const songs = await fetchAdminSongsFromR2();
+    songs.sort((a, b) => new Date(b.publishedAt || b.createdAt || 0) - new Date(a.publishedAt || a.createdAt || 0));
+    return res.json({ success: true, count: songs.length, songs });
+  } catch (err) {
+    console.error('[ADMIN_STANDALONE_SONGS_ERROR] Error fetching admin standalone songs:', err);
+    return res.status(500).json({ success: false, error: 'Failed to fetch standalone songs' });
+  }
+});
+
+/**
+ * POST /admin/standalone-songs
+ * Admin endpoint: uploads a standalone audio file & square thumbnail to Cloudflare R2.
+ * Metadata stored in config/admin_songs.json.
+ */
+app.post('/admin/standalone-songs', requireAdminAuth, upload.fields([
+  { name: 'audioFile', maxCount: 1 },
+  { name: 'thumbnailFile', maxCount: 1 },
+]), async (req, res) => {
+  let uploadedAudioKey = null;
+  let uploadedThumbKey = null;
+
+  try {
+    const title = (req.body?.title || '').trim();
+    if (!title) {
+      return res.status(400).json({ success: false, error: 'Song title is required and cannot be empty.' });
+    }
+
+    const audioFile = req.files?.audioFile?.[0];
+    if (!audioFile) {
+      return res.status(400).json({ success: false, error: 'Audio file is required.' });
+    }
+
+    const thumbFile = req.files?.thumbnailFile?.[0];
+    if (!thumbFile) {
+      return res.status(400).json({ success: false, error: 'Thumbnail image is required.' });
+    }
+
+    // Validate audio format & size
+    const audioNameLower = audioFile.originalname.toLowerCase();
+    let audioExt = '.mp3';
+    let audioContentType = 'audio/mpeg';
+    if (audioNameLower.endsWith('.m4a')) {
+      audioExt = '.m4a';
+      audioContentType = 'audio/mp4';
+    } else if (audioNameLower.endsWith('.wav')) {
+      audioExt = '.wav';
+      audioContentType = 'audio/wav';
+    } else if (!audioNameLower.endsWith('.mp3')) {
+      return res.status(400).json({ success: false, error: 'Unsupported audio format. Supported formats: MP3, M4A, WAV.' });
+    }
+
+    if (audioFile.size < 10000) {
+      return res.status(400).json({ success: false, error: 'Audio file appears to be empty or corrupted (< 10 KB).' });
+    }
+
+    // Validate thumbnail format & square dimensions
+    const thumbNameLower = thumbFile.originalname.toLowerCase();
+    let thumbExt = '.jpg';
+    let thumbContentType = 'image/jpeg';
+    if (thumbNameLower.endsWith('.png')) {
+      thumbExt = '.png';
+      thumbContentType = 'image/png';
+    } else if (thumbNameLower.endsWith('.webp')) {
+      thumbExt = '.webp';
+      thumbContentType = 'image/webp';
+    } else if (thumbNameLower.endsWith('.jpeg')) {
+      thumbExt = '.jpeg';
+      thumbContentType = 'image/jpeg';
+    } else if (!thumbNameLower.endsWith('.jpg')) {
+      return res.status(400).json({ success: false, error: 'Unsupported thumbnail format. Supported: JPG, JPEG, PNG, WEBP.' });
+    }
+
+    // Square 1:1 aspect ratio validation
+    const dims = getImageDimensions(thumbFile.buffer);
+    if (dims) {
+      if (dims.width !== dims.height) {
+        return res.status(400).json({
+          success: false,
+          error: `Thumbnail must be square (1:1 aspect ratio). Uploaded image is ${dims.width}x${dims.height} px. 512x512 is recommended.`,
+        });
+      }
+    }
+
+    // Generate safe unique song ID
+    const songUid = `admin_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const audioKey = `admin_music/${songUid}${audioExt}`;
+    const thumbKey = `admin_thumbnails/${songUid}${thumbExt}`;
+
+    // Upload audio to R2
+    const putAudioCmd = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: audioKey,
+      Body: audioFile.buffer,
+      ContentType: audioContentType,
+      Metadata: {
+        songTitle: title,
+        source: 'admin',
+        uploadedBy: 'admin-standalone',
+      },
+    });
+    await s3Client.send(putAudioCmd);
+    uploadedAudioKey = audioKey;
+    const audioUrl = `${publicDomain}/${encodeURIComponent(audioKey).replaceAll('%2F', '/')}`;
+
+    // Upload thumbnail to R2
+    const putThumbCmd = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: thumbKey,
+      Body: thumbFile.buffer,
+      ContentType: thumbContentType,
+    });
+    await s3Client.send(putThumbCmd);
+    uploadedThumbKey = thumbKey;
+    const thumbUrl = `${publicDomain}/${encodeURIComponent(thumbKey).replaceAll('%2F', '/')}`;
+
+    const newSong = {
+      id: songUid,
+      title,
+      description: (req.body?.description || '').trim(),
+      thumbnailUrl: thumbUrl,
+      audioUrl,
+      r2AudioKey: audioKey,
+      r2ThumbnailKey: thumbKey,
+      channelId: 'admin-standalone',
+      channelTitle: 'HLT&BS Official Music',
+      artist: 'HLT&BS Official Music',
+      source: 'admin',
+      isAudioUploaded: true,
+      publishedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      formattedDuration: (req.body?.duration || '3:30').trim(),
+      fileSize: audioFile.size,
+    };
+
+    const currentSongs = await fetchAdminSongsFromR2();
+    currentSongs.unshift(newSong);
+    await saveAdminSongsToR2(currentSongs);
+
+    console.log(`[R2_STANDALONE_SONG_SUCCESS] Standalone song created: "${title}" (ID: ${songUid})`);
+    return res.json({ success: true, song: newSong });
+  } catch (err) {
+    console.error('[ADMIN_STANDALONE_UPLOAD_ERROR] Error creating standalone song:', err);
+
+    // Rollback any partially uploaded objects on error
+    if (uploadedAudioKey) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: uploadedAudioKey }));
+      } catch (_) {}
+    }
+    if (uploadedThumbKey) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: uploadedThumbKey }));
+      } catch (_) {}
+    }
+
+    return res.status(500).json({ success: false, error: `Failed to create standalone song: ${err.message || err}` });
+  }
+});
+
+/**
+ * DELETE /admin/standalone-songs/:id
+ * Strictly scoped: ONLY deletes objects starting with 'admin_music/' and 'admin_thumbnails/'.
+ * NEVER touches 'music/*', YouTube files, artist files, or banners.
+ */
+app.delete('/admin/standalone-songs/:id', requireAdminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'Song ID is required' });
+    }
+
+    const songs = await fetchAdminSongsFromR2();
+    const song = songs.find(s => s.id === id);
+    if (!song) {
+      return res.status(404).json({ success: false, error: 'Standalone song not found' });
+    }
+
+    // STRICT ISOLATION GUARD: ONLY delete if keys start with 'admin_music/' and 'admin_thumbnails/'
+    if (song.r2AudioKey && typeof song.r2AudioKey === 'string' && song.r2AudioKey.startsWith('admin_music/')) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: song.r2AudioKey }));
+        console.log(`[R2_ADMIN_SONG_DELETED] Deleted audio ${song.r2AudioKey} from bucket ${bucketName}`);
+      } catch (delErr) {
+        console.warn('[R2_ADMIN_SONG_DELETE_WARN] Could not delete audio from R2:', delErr.message);
+      }
+    }
+
+    if (song.r2ThumbnailKey && typeof song.r2ThumbnailKey === 'string' && song.r2ThumbnailKey.startsWith('admin_thumbnails/')) {
+      try {
+        await s3Client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: song.r2ThumbnailKey }));
+        console.log(`[R2_ADMIN_THUMB_DELETED] Deleted thumbnail ${song.r2ThumbnailKey} from bucket ${bucketName}`);
+      } catch (delErr) {
+        console.warn('[R2_ADMIN_THUMB_DELETE_WARN] Could not delete thumbnail from R2:', delErr.message);
+      }
+    }
+
+    const remaining = songs.filter(s => s.id !== id);
+    await saveAdminSongsToR2(remaining);
+
+    return res.json({ success: true, message: 'Standalone song deleted successfully' });
+  } catch (err) {
+    console.error('[ADMIN_STANDALONE_DELETE_ERROR] Error deleting standalone song:', err);
+    return res.status(500).json({ success: false, error: 'Failed to delete standalone song' });
   }
 });
 
